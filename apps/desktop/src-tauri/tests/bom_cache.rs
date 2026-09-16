@@ -1,6 +1,7 @@
 use partnest_desktop_lib::bom::bridge::BridgeError;
 use partnest_desktop_lib::bom::cache::{
-    preview_interactive_bom, CacheError, InteractiveBomCache, InteractiveBomRuntime, SelectionError,
+    preview_interactive_bom, CacheError, CachedBomSession, InteractiveBomCache,
+    InteractiveBomRuntime, SelectionError,
 };
 use partnest_desktop_lib::bom::types::BomSide;
 use partnest_desktop_lib::db::Database;
@@ -17,6 +18,14 @@ fn cache_entries(dir: &Path) -> usize {
     fs::read_dir(dir)
         .map(|entries| entries.count())
         .unwrap_or(0)
+}
+
+/// Interactive sessions always carry a bridged cache copy.
+fn cached_path(session: &CachedBomSession) -> PathBuf {
+    session
+        .cache_path
+        .clone()
+        .expect("interactive sessions have a cache file")
 }
 
 fn active_sessions(db: &Database) -> i64 {
@@ -64,7 +73,7 @@ fn restoring_a_deleted_cache_file_asks_the_operator_to_pick_the_bom_again() {
     let session = InteractiveBomCache::new(&db, &cache_dir)
         .cache_interactive_bom(fixture(), "Fixture")
         .unwrap();
-    fs::remove_file(&session.cache_path).unwrap();
+    fs::remove_file(cached_path(&session)).unwrap();
 
     let error = InteractiveBomCache::new(&db, &cache_dir)
         .restore_active_session()
@@ -84,8 +93,8 @@ fn caches_atomic_copy_with_hash_name_and_bridge_marker() {
     assert_eq!(hash(&source), before);
     assert_eq!(session.sha256, before);
     assert_eq!(session.cache_name, format!("{before}.html"));
-    assert!(session.cache_path.is_file());
-    let cached = fs::read_to_string(&session.cache_path).unwrap();
+    assert!(cached_path(&session).is_file());
+    let cached = fs::read_to_string(cached_path(&session)).unwrap();
     assert!(cached.contains("bridge-v1"));
     assert!(cached.contains("MutationObserver"));
     assert!(cached.contains("data-designator"));
@@ -111,7 +120,7 @@ fn resolves_only_current_token_known_unique_same_group_designators() {
         .unwrap();
     assert_eq!(resolved.session_id, session.session_id);
     assert_eq!(resolved.designators, ["R1", "R2"]);
-    assert_eq!(resolved.side, BomSide::Top);
+    assert_eq!(resolved.side, Some(BomSide::Top));
     assert!(matches!(
         cache.resolve_bom_selection(&session.token, &["R1".into(), "R3".into()]),
         Err(SelectionError::MixedSideSelection)
@@ -146,7 +155,7 @@ fn bootstraps_current_token_and_repairs_tampered_cache() {
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache = InteractiveBomCache::new(&db, root.path().join("cache"));
     let first = cache.cache_interactive_bom(fixture(), "Fixture").unwrap();
-    let content = fs::read_to_string(&first.cache_path).unwrap();
+    let content = fs::read_to_string(cached_path(&first)).unwrap();
     assert!(content.contains("__PARTNEST_BOM_BRIDGE_V1__"));
     assert!(content.contains(&first.token));
     let config_start =
@@ -155,9 +164,9 @@ fn bootstraps_current_token_and_repairs_tampered_cache() {
     let config = &content[config_start..config_end];
     assert!(serde_json::from_str::<serde_json::Value>(config).is_ok());
     assert!(!config.contains("</script>"));
-    fs::write(&first.cache_path, "tampered").unwrap();
+    fs::write(cached_path(&first), "tampered").unwrap();
     let second = cache.cache_interactive_bom(fixture(), "Fixture").unwrap();
-    let repaired = fs::read_to_string(&second.cache_path).unwrap();
+    let repaired = fs::read_to_string(cached_path(&second)).unwrap();
     assert!(repaired.contains(&second.token));
     assert!(repaired.contains("bridge-v1"));
     assert_ne!(repaired, "tampered");
@@ -184,7 +193,7 @@ fn restores_active_session_with_new_token_after_runtime_restart() {
             .resolve_bom_selection(&restored.token, &["R1".into()])
             .unwrap()
             .side,
-        BomSide::Top
+        Some(BomSide::Top)
     );
 }
 
@@ -339,13 +348,58 @@ fn companion_metadata_is_cached_and_restored_without_schema_changes() {
         .cache_interactive_bom_with_companion(&source, "Board", Some(&companion))
         .unwrap();
     assert_eq!(first.normalized.groups[0].lcsc_code, "C999");
-    assert!(fs::read_to_string(&first.cache_path)
+    assert!(fs::read_to_string(cached_path(&first))
         .unwrap()
         .contains("data-partnest-companion=\"bom-v1\""));
 
     let restarted = InteractiveBomCache::new(&db, &cache_dir);
     let restored = restarted.restore_active_session().unwrap().unwrap();
     assert_eq!(restored.normalized.groups[0].lcsc_code, "C999");
+}
+
+#[test]
+fn activating_an_interactive_record_by_id_reissues_the_cached_canvas() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let runtime = InteractiveBomRuntime::new(&cache_dir);
+    let activated = runtime
+        .cache_interactive_bom(&db, fixture(), "Fixture")
+        .unwrap();
+
+    let reactivated = runtime
+        .activate_imported_bom(&db, Some(&activated.bom_file_id), None, None)
+        .unwrap();
+    assert_eq!(
+        reactivated.kind,
+        partnest_desktop_lib::bom::history::BomImportKind::Interactive
+    );
+    assert_ne!(reactivated.token, activated.token, "each session is fresh");
+    assert!(
+        fs::read_to_string(cached_path(&reactivated))
+            .unwrap()
+            .contains(&reactivated.token),
+        "the canvas bootstrap must carry the re-issued token"
+    );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM welding_sessions WHERE status = 'active'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let resolved = runtime
+        .resolve_bom_selection(&db, &reactivated.token, &["R1".into()])
+        .unwrap();
+    assert_eq!(resolved.side, Some(BomSide::Top));
+
+    let stale = runtime
+        .resolve_bom_selection(&db, &activated.token, &["R1".into()])
+        .expect_err("the previous token must stop working");
+    assert!(matches!(stale, BridgeError::InvalidToken));
 }
 
 fn hash(path: &Path) -> String {

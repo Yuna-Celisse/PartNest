@@ -1,6 +1,8 @@
 .welding-workspace {
   box-sizing: border-box;
   display: grid;
+  /* 固定高度让中间行吃掉剩余空间，否则整块只有内容高，下方留白。 */
+  height: calc(100vh - var(--toolbar-height) - 1.5rem);
   min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(0, 13fr) minmax(19rem, 7fr);
@@ -20,7 +22,17 @@
 }
 .welding-empty-state strong { color: var(--text); font-size: 14px; font-weight: 600; }
 .welding-empty-state p { margin: 0; color: var(--danger); font-size: 12px; }
+.welding-empty-state > .welding-empty-state__hint { max-width: 32rem; color: var(--text-muted); text-align: center; line-height: 1.6; }
 .welding-empty-state__actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+.welding-chooser__list { display: grid; gap: .25rem; margin: 0; padding: 0; list-style: none; }
+.welding-chooser__item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: .5rem; border: 1px solid var(--border); background: var(--bg-raised); padding: .5rem; color: var(--text); text-align: left; cursor: pointer; }
+.welding-chooser__item:hover:not(:disabled) { border-color: var(--accent); }
+.welding-chooser__item:disabled { opacity: .6; cursor: progress; }
+.welding-chooser__names { display: grid; min-width: 0; gap: .1rem; }
+.welding-chooser__names span { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.welding-chooser__empty, .welding-chooser__error { margin: 0; color: var(--text-muted); font-size: 12px; }
+.welding-chooser__error { margin-bottom: .5rem; }
 
 .welding-workspace__header {
   display: flex;
@@ -35,15 +47,32 @@
 .welding-workspace__header h1 { margin: 0; color: var(--text); font-size: 16px; }
 .welding-workspace__eyebrow { margin: 0 0 .15rem; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .welding-workspace__file { max-width: 26rem; margin: .2rem 0 0; overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.welding-workspace__actions { display: flex; align-items: center; gap: .5rem; }
 .welding-workspace__meta { display: flex; flex-wrap: wrap; gap: .35rem; color: var(--text-muted); font-size: 11px; }
 .welding-workspace__meta span { border: 1px solid var(--border); border-radius: 999px; padding: .25rem .5rem; }
 
 .welding-bom {
+  position: relative;
   min-width: 0;
   min-height: 24rem;
   overflow: hidden;
   border: 1px solid var(--border);
 }
+
+.welding-canvas-controls { position: absolute; z-index: 2; top: .5rem; right: .5rem; display: flex; gap: .25rem; }
+/* 画布是浅色的，按钮必须自带深色文字，否则继承暗色主题的浅色文字看不见。 */
+.welding-canvas-controls .pn-button {
+  min-height: 26px;
+  padding: 0 .5rem;
+  color: #1f2329;
+  border: 1px solid #c9ced6;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 25%);
+  font-size: 12px;
+}
+.welding-canvas-controls .pn-button:hover:not(:disabled) { border-color: #8f98a5; background: #f0f2f5; }
+.welding-canvas-controls .pn-button:active:not(:disabled) { background: #e6e9ee; }
+.welding-canvas-controls .pn-button:disabled { opacity: .5; }
 
 .bom-canvas-light {
   background: #f6f7f8;
@@ -58,6 +87,21 @@
   border: 0;
   background: #f6f7f8;
 }
+
+.welding-canvas-note {
+  display: grid;
+  height: 100%;
+  min-height: 24rem;
+  place-content: center;
+  justify-items: center;
+  gap: .25rem;
+  padding: 1rem;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.welding-canvas-note strong { color: var(--text); font-size: 13px; font-weight: 600; }
 
 .welding-right {
   grid-row: 2;
@@ -112,7 +156,7 @@
   grid-column: 1 / -1;
   grid-row: 3;
   min-width: 0;
-  max-height: calc(30px + min(14rem, 28vh));
+  max-height: calc(30px + min(22rem, 40vh));
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-panel);
@@ -129,7 +173,7 @@
 }
 
 .component-tray__header h3 { margin: 0; color: var(--text); font-size: 12px; }
-.component-tray__table { min-width: 0; max-height: min(14rem, 28vh); overflow: auto; font-size: 12px; }
+.component-tray__table { min-width: 0; max-height: min(22rem, 40vh); overflow: auto; font-size: 12px; }
 .component-tray__row { display: flex; min-width: 28rem; }
 .component-tray__row[data-active="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel)); }
 .component-tray__row[data-selectable="true"] { cursor: pointer; }
@@ -140,7 +184,7 @@
 .component-tray__empty { margin: .5rem; color: var(--text-muted); }
 
 @media (max-width: 900px) {
-  .welding-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(20rem, 1fr) auto auto; }
+  .welding-workspace { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(20rem, 1fr) auto auto; }
   .welding-bom { grid-row: 2; }
   .welding-right { grid-row: 3; }
   .component-tray { grid-row: 4; }

@@ -20,9 +20,22 @@ const columns = [
   ["side", "板面"],
 ] as const;
 
-function groupDesignators(group: BomGroup, side: BomSide | "all") {
-  if (side === "all") return group.designators;
-  return group.placements.filter((placement) => placement.side === side).map((placement) => placement.designator);
+/** 点一行就选到它自己所在的面：当前页签有该器件时用它，否则用它自己的面。 */
+function rowDesignators(group: BomGroup, side: BomSide | "all") {
+  const sided = group.placements.filter((placement) => placement.side);
+  // 无板面列的表格 BOM 由操作者的页签决定；"全部"只是查看，不产生选择。
+  if (sided.length === 0) return side === "all" ? [] : group.designators;
+  const onCurrent = sided.filter((placement) => placement.side === side).map((placement) => placement.designator);
+  if (onCurrent.length) return onCurrent;
+  const target = sided.some((placement) => placement.side === "top") ? "top" : sided[0].side as BomSide;
+  return sided.filter((placement) => placement.side === target).map((placement) => placement.designator);
+}
+
+function sideLabel(group: BomGroup) {
+  const sides = new Set(group.placements.map((placement) => placement.side).filter(Boolean));
+  if (sides.size === 0) return "未标注";
+  if (sides.size > 1) return "双面";
+  return sides.has("top") ? "顶层" : "底层";
 }
 
 export function ComponentTray({ groups, side, activeComponentKey, widths, onResizeStart, onResizeKey, onSelectDesignators, collapsed, onToggle }: ComponentTrayProps) {
@@ -55,13 +68,13 @@ export function ComponentTray({ groups, side, activeComponentKey, widths, onResi
         </div>)}
       </div>
       {groups.map((group) => {
-        const designators = groupDesignators(group, side);
-        const selectable = side !== "all" && designators.length > 0;
+        const designators = rowDesignators(group, side);
+        const selectable = designators.length > 0;
         return <div className="component-tray__row" role="row" key={group.component_key} data-testid={`tray-row-${group.component_key}`} data-active={group.component_key === activeComponentKey ? "true" : "false"} data-selectable={selectable ? "true" : "false"} tabIndex={selectable ? 0 : undefined} aria-label={selectable ? `${group.name || group.value}，选择 ${designators.join(", ")}` : undefined} onClick={() => selectable && onSelectDesignators(designators)} onKeyDown={(event) => { if (selectable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelectDesignators(designators); } }}>
           <div className="component-tray__cell" role="cell" data-testid={group.component_key === activeComponentKey ? "component-cell" : undefined} style={{ width: widths.component }}>{group.name || group.value}</div>
           <div className="component-tray__cell" role="cell" style={{ width: widths.package }}>{group.package || "—"}</div>
           <div className="component-tray__cell" role="cell" style={{ width: widths.quantity }}>{designators.length}</div>
-          <div className="component-tray__cell" role="cell" style={{ width: widths.side }}>{side === "all" ? "双面" : side === "top" ? "顶层" : "底层"}</div>
+          <div className="component-tray__cell" role="cell" style={{ width: widths.side }}>{sideLabel(group)}</div>
         </div>;
       })}
       {!groups.length && <p className="component-tray__empty">暂无器件</p>}

@@ -157,7 +157,7 @@ fn derives_component_key_from_a_unique_component_name_when_lc_code_is_absent() {
 }
 
 #[test]
-fn rejects_ambiguous_component_name_without_lc_code() {
+fn ambiguous_component_name_falls_back_to_the_designator_identity() {
     let source = r#"
       window.files = {
         "bom_merge": {"data": {
@@ -165,16 +165,62 @@ fn rejects_ambiguous_component_name_without_lc_code() {
             "r0603": {"Name": "10k", "value": "10k"},
             "r0805": {"Name": "10k", "value": "10k"}
           },
-          "designator_info": {"top": [{"des": "R1", "cm": "10k"}], "bottom": []}
+          "designator_info": {"top": [{"des": "R1", "cm": "10k", "ft_name": "R0603"}], "bottom": []}
         }}
       };
     "#;
-    let error = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+    let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
         source,
         "ambiguous-no-lc-code",
     )
-    .expect_err("ambiguous component must not be guessed");
-    assert!(error.to_string().contains("ambiguous component key"));
+    .expect("an ambiguous name must not block the import");
+    assert_eq!(bom.groups.len(), 1);
+    assert_eq!(bom.groups[0].component_key, "part:10k+R0603");
+    assert_eq!(bom.groups[0].package, "R0603");
+    assert_eq!(bom.groups[0].designators, ["R1"]);
+}
+
+#[test]
+fn parts_without_a_supplier_code_keep_their_own_groups() {
+    // EasyEDA leaves `lc_code` empty for parts that have no LCSC entry and keys
+    // comp_info by the composite "C<code>,<value>" string otherwise.
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {
+            "C1525,100nF": {"Name": "100nF", "Supplier Part": "C1525"},
+            "": {"Name": "ZX-XH2.54-8PZZ", "Supplier Part": "C7429638"}
+          },
+          "designator_info": {"top": [
+            {"des": "C2", "cm": "100nF", "lc_code": "C1525,100nF", "ft_name": "0402"},
+            {"des": "H2", "cm": "HDR-M_2.54_1x8P", "lc_code": "", "ft_name": "HDR-TH_8P-P2.54-V-M"},
+            {"des": "hole1", "cm": "M3", "lc_code": "", "ft_name": "m3 125x300"}
+          ], "bottom": []}
+        }}
+      };
+    "#;
+    let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        source,
+        "no-supplier-code",
+    )
+    .expect("parts without a supplier code must import");
+    assert_eq!(
+        bom.groups.len(),
+        3,
+        "each distinct part keeps its own group"
+    );
+    let header = bom
+        .groups
+        .iter()
+        .find(|group| group.name == "HDR-M_2.54_1x8P")
+        .expect("header group");
+    assert_eq!(
+        header.component_key,
+        "part:HDR-M_2.54_1x8P+HDR-TH_8P-P2.54-V-M"
+    );
+    assert_eq!(header.package, "HDR-TH_8P-P2.54-V-M");
+    assert!(header.lcsc_code.is_empty());
+    assert_eq!(header.designators, ["H2"]);
 }
 
 #[test]
@@ -281,4 +327,35 @@ fn companion_group(
         }],
         extra_fields: BTreeMap::new(),
     }
+}
+
+#[test]
+fn a_part_without_a_supplier_code_still_carries_its_model_as_the_mpn() {
+    // EasyEDA leaves lc_code empty for unlisted parts and shows `cm` in the
+    // 器件型号 column, so that value has to stay matchable as an MPN.
+    let source = r#"
+      window.files = {
+        "bom_merge": {"data": {
+          "comp_info": {"": {"Name": "SOME-OTHER-PART"}},
+          "designator_info": [{"top": [
+            {"des": "H2", "cm": "HDR-M_2.54_1x8P", "lc_code": "", "ft_name": "HDR-TH_8P-P2.54-V-M"}
+          ], "bottom": []}]
+        }}
+      };
+    "#;
+    let bom = partnest_desktop_lib::bom::interactive_html::parse_interactive_html_text(
+        source,
+        "no-supplier-code",
+    )
+    .expect("parses");
+    assert_eq!(bom.groups.len(), 1);
+    let group = &bom.groups[0];
+    assert_eq!(
+        group.component_key,
+        "part:HDR-M_2.54_1x8P+HDR-TH_8P-P2.54-V-M"
+    );
+    assert_eq!(group.name, "HDR-M_2.54_1x8P");
+    assert_eq!(group.mpn, "HDR-M_2.54_1x8P");
+    assert_eq!(group.package, "HDR-TH_8P-P2.54-V-M");
+    assert!(group.lcsc_code.is_empty(), "no supplier code was invented");
 }

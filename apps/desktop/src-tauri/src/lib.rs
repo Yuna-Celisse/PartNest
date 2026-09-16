@@ -27,9 +27,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::bom::inspect_tabular_bom,
             commands::bom::preview_interactive_bom_command,
+            commands::bom::analyze_bom_file,
+            commands::bom::activate_imported_bom,
+            commands::bom::remove_bom_file,
             commands::bom::cache_interactive_bom,
             commands::bom::resolve_bom_selection,
             commands::bom::restore_active_interactive_bom,
+            commands::bom::list_bom_files,
             commands::boxes::list_boxes,
             commands::boxes::create_box,
             commands::boxes::resize_box,
@@ -44,7 +48,9 @@ pub fn run() {
             commands::movements::list_movements,
             commands::settings::create_backup,
             commands::settings::restore_backup,
+            commands::settings::reset_data,
             commands::welding::confirm_take,
+            commands::welding::end_welding_session,
             commands::welding::reverse_take,
             commands::welding::get_welding_progress,
         ])

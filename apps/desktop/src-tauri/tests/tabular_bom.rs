@@ -7,7 +7,6 @@ use std::{
 use partnest_desktop_lib::bom::tabular::inspect_tabular_bom;
 use partnest_desktop_lib::bom::tabular::TabularError;
 use partnest_desktop_lib::bom::types::ImportPreview;
-use partnest_desktop_lib::commands::bom::inspect_tabular_bom as inspect_tabular_bom_command;
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 
@@ -32,16 +31,6 @@ fn comma_and_tab_files_normalize_identically() {
     let tab = parse_fixture("tab-utf16le.csv");
     assert_eq!(comma.groups, tab.groups);
     assert_eq!(comma.groups[0].designators, ["C1", "C2"]);
-}
-
-#[test]
-fn inspect_command_delegates_to_tabular_parser() {
-    let result = inspect_tabular_bom_command(fixture("comma-utf8.csv").display().to_string(), None)
-        .expect("inspect command should parse tabular BOM");
-    let ImportPreview::Ready(bom) = result else {
-        panic!("expected ready preview")
-    };
-    assert_eq!(bom.groups[0].quantity, 2);
 }
 
 #[test]

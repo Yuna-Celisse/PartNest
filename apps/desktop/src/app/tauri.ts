@@ -58,6 +58,7 @@ export function cachedBomUrl(cachePath: string): string {
 }
 
 export type BomSide = "top" | "bottom";
+export type BomImportKind = "interactive" | "tabular";
 export type BomPlacement = { designator: string; side: BomSide | null; component_key: string };
 export type BomGroup = {
   component_key: string;
@@ -79,14 +80,17 @@ export type CachedBomSession = {
   display_name: string;
   sha256: string;
   cache_name: string;
-  cache_path: string;
+  /** `null` for tabular BOMs: there is no interactive canvas to load. */
+  cache_path: string | null;
+  kind: BomImportKind;
   token: string;
   normalized: { source_name: string; groups: BomGroup[] };
 };
+export type BomFileSummary = { id: string; display_name: string; original_name: string; created_at: string; active: boolean };
 export type ResolvedBomSelection = {
   session_id: string;
   component_key: string;
-  side: BomSide;
+  side: BomSide | null;
   designators: string[];
 };
 export type ConfirmTakeInput = {
@@ -153,10 +157,18 @@ export type DesktopApi = {
   deletePart: (id: string) => Promise<void>;
   lookupLcsc: (lcscCode: string) => Promise<LcscPartInfo>;
   restoreActiveInteractiveBom: () => Promise<CachedBomSession | null>;
+  listBomFiles: () => Promise<BomFileSummary[]>;
+  /** Reopen an imported BOM from its stored analysis snapshot. */
+  analyzeBomFile: (id: string) => Promise<unknown>;
+  removeBomFile: (id: string) => Promise<void>;
+  /** Make an imported BOM the active welding session (by record id or source file). */
+  activateImportedBom: (input: { id?: string; sourcePath?: string; displayName?: string }) => Promise<CachedBomSession>;
   /** Resolve a selection reported by the BOM frame using the bridge contract. */
   resolveBomSelection: (token: string, designators: string[]) => Promise<ResolvedBomSelection>;
   confirmTake: (input: ConfirmTakeInput) => Promise<TakeResult>;
   reverseTake: (movementId: string) => Promise<TakeResult>;
+  /** Leave the current welding session; already taken stock stays deducted. */
+  endWeldingSession: (sessionId: string) => Promise<void>;
   getWeldingProgress: (sessionId: string) => Promise<WeldingProgress[]>;
   listMovements: () => Promise<Movement[]>;
   createBackup: () => Promise<string>;
@@ -177,10 +189,15 @@ export const desktopApi: DesktopApi = {
   deletePart: (id) => invoke("delete_part", { id }),
   lookupLcsc: (lcscCode) => invoke("lookup_lcsc", { lcscCode }),
   restoreActiveInteractiveBom: () => invoke("restore_active_interactive_bom"),
+  listBomFiles: () => invoke("list_bom_files"),
+  analyzeBomFile: (id) => invoke("analyze_bom_file", { id }),
+  removeBomFile: (id) => invoke("remove_bom_file", { id }),
+  activateImportedBom: (input) => invoke("activate_imported_bom", input),
   // 把原始桥接消息原样交给 Rust 校验契约，不在 webview 层重新实现一套规则。
   resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { message: { type: "partnest:bom-selection", token, designators } }),
   confirmTake: (input) => invoke("confirm_take", { input }),
   reverseTake: (movementId) => invoke("reverse_take", { movementId }),
+  endWeldingSession: (sessionId) => invoke("end_welding_session", { sessionId }),
   getWeldingProgress: (sessionId) => invoke("get_welding_progress", { sessionId }),
   listMovements: () => invoke("list_movements"),
   createBackup: () => invoke("create_backup"),

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { BomGroup, InventoryPart, MatchResult } from "@partnest/domain";
 import { matchBomGroup } from "@partnest/domain";
-import { desktopApi, type Part } from "../../app/tauri";
+import { desktopApi, type Part, type BomFileSummary } from "../../app/tauri";
 import { useCallback, useRef, useState } from "react";
 
 export type FieldName = "quantity" | "designators" | "name" | "value" | "package" | "manufacturer" | "mpn" | "lcsc_code" | "side";
@@ -22,10 +22,14 @@ export type ImportPreview =
 
 export type BomImportApi = {
   inspectTabularBom: (sourcePath: string, mapping?: FieldMapping) => Promise<unknown>;
-  /** Read-only analysis of an interactive BOM: no cache copy, no session switch. */
+  /** Read-only analysis of an interactive BOM: no session switch, but it is recorded in the history. */
   previewInteractiveBom: (sourcePath: string, companionCsvPath?: string) => Promise<unknown>;
   cacheInteractiveBom: (sourcePath: string, displayName: string, companionCsvPath?: string) => Promise<unknown>;
   listParts: () => Promise<Part[]>;
+  listBomFiles?: () => Promise<BomFileSummary[]>;
+  analyzeBomFile?: (id: string) => Promise<unknown>;
+  removeBomFile?: (id: string) => Promise<void>;
+  activateImportedBom?: (input: { id?: string; sourcePath?: string; displayName?: string }) => Promise<unknown>;
 };
 
 export type BomAnalysisRow = {
@@ -54,6 +58,10 @@ const defaultApi: BomImportApi = {
   previewInteractiveBom: (sourcePath, companionCsvPath) => invoke("preview_interactive_bom", { sourcePath, companionCsvPath }),
   cacheInteractiveBom: (sourcePath, displayName, companionCsvPath) => invoke("cache_interactive_bom", { sourcePath, displayName, companionCsvPath }),
   listParts: () => desktopApi.listParts(),
+  listBomFiles: () => desktopApi.listBomFiles(),
+  analyzeBomFile: (id) => desktopApi.analyzeBomFile(id),
+  removeBomFile: (id) => desktopApi.removeBomFile(id),
+  activateImportedBom: (input) => desktopApi.activateImportedBom(input),
 };
 
 export const defaultPickFile = async (): Promise<string | null> => {
@@ -131,19 +139,18 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pic
   const [error, setError] = useState("");
   const [path, setPath] = useState("");
   const [companionPath, setCompanionPath] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [headers, setHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<FieldMapping>({});
   const [bom, setBom] = useState<NormalizedBomDto | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
   const [rows, setRows] = useState<BomAnalysisRow[]>([]);
-  const [activatedPath, setActivatedPath] = useState("");
+  const [activated, setActivated] = useState(false);
+  const [historyId, setHistoryId] = useState("");
   const pendingImportRef = useRef<{
     status: typeof status;
     error: string;
     path: string;
     companionPath: string;
-    displayName: string;
     headers: string[];
     mapping: FieldMapping;
     bom: NormalizedBomDto | null;
@@ -154,7 +161,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pic
   const inspect = useCallback(async (sourcePath: string, supplied?: FieldMapping, suppliedCompanionPath = companionPath) => {
     const extension = sourcePath.slice(sourcePath.lastIndexOf(".")).toLowerCase();
     if (!supported.has(extension)) { setStatus("unsupported"); setError("不支持的 BOM 格式"); return; }
-    setPath(sourcePath); setError(""); setStatus("loading"); setActivatedPath("");
+    setPath(sourcePath); setError(""); setStatus("loading"); setActivated(false); setHistoryId("");
     try {
       // 选文件只做分析，“设为活动 BOM”才是显式动作，
       // 避免分析页的副作用中断正在进行的焊接会话。
@@ -171,32 +178,61 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pic
       setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setStatus("ready");
       pendingImportRef.current = null;
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
-  }, [api, companionPath, displayName]);
+  }, [api, companionPath]);
 
-  /** Cache the interactive BOM and switch the welding workspace to it. */
+  /** Make the analysed BOM the welding session: an interactive file caches a
+   *  bridged copy, a tabular import opens a session from its snapshot. */
   const activate = useCallback(async () => {
+    const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+    if (extension === ".csv" || extension === ".xlsx") {
+      if (!api.activateImportedBom || (!path && !historyId)) return;
+      setStatus("loading"); setError("");
+      try {
+        const result = toPreview(await api.activateImportedBom({ id: historyId || undefined, sourcePath: path || undefined }));
+        if (result.kind !== "Ready") { setStatus("error"); setError(result.kind === "Unsupported" ? result.message ?? "设为活动 BOM 失败" : "设为活动 BOM 失败"); return; }
+        const listed = await api.listParts();
+        setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setActivated(true); setStatus("ready");
+      } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
+      return;
+    }
     if (!path.toLowerCase().endsWith(".html")) return;
     setStatus("loading"); setError("");
     try {
-      const remark = displayName.trim() || baseName(path);
+      // Interactive BOMs are named after their file; renaming is not offered.
+      const remark = baseName(path);
       const result = toPreview(await (companionPath
         ? api.cacheInteractiveBom(path, remark, companionPath)
         : api.cacheInteractiveBom(path, remark)));
       if (result.kind !== "Ready") { setStatus("error"); setError(result.kind === "Unsupported" ? result.message ?? "BOM 导入失败" : "缓存交互式 BOM 失败"); return; }
       const listed = await api.listParts();
-      setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setActivatedPath(path); setStatus("ready");
+      setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setActivated(true); setStatus("ready");
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
-  }, [api, companionPath, displayName, path]);
+  }, [api, companionPath, historyId, path]);
+
+  /** Reload the analysis from an imported-BOM history row's cached copy. */
+  const loadCached = useCallback(async (id: string) => {
+    if (!api.analyzeBomFile) return;
+    setStatus("loading"); setError(""); setActivated(false); setPath("");
+    try {
+      const result = toPreview(await api.analyzeBomFile(id));
+      if (result.kind !== "Ready") { setStatus("error"); setError(result.kind === "Unsupported" ? result.message ?? "无法从历史记录解析该 BOM" : "历史记录需要重新映射，请重新选择原始文件"); return; }
+      const listed = await api.listParts();
+      setBom(result.bom); setParts(listed); setRows(createAnalysisRows(result.bom, listed)); setStatus("ready"); setHistoryId(id);
+    } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
+  }, [api]);
+
+  /** Drop the loaded analysis, for example after its history record is removed. */
+  const clearLoaded = useCallback(() => {
+    setStatus("idle"); setError(""); setPath(""); setCompanionPath(""); setBom(null); setParts([]); setRows([]); setHistoryId(""); setActivated(false);
+  }, []);
 
   const chooseFile = useCallback(async () => {
     const selected = await pickFile();
     if (!selected) return;
-    pendingImportRef.current = { status, error, path, companionPath, displayName, headers, mapping, bom, parts, rows };
-    const defaultName = baseName(selected);
-    if (!displayName.trim()) setDisplayName(defaultName);
+    pendingImportRef.current = { status, error, path, companionPath, headers, mapping, bom, parts, rows };
     setCompanionPath("");
     await inspect(selected, undefined, "");
-  }, [bom, companionPath, displayName, error, headers, inspect, mapping, parts, path, pickFile, rows, status]);
+  }, [bom, companionPath, error, headers, inspect, mapping, parts, path, pickFile, rows, status]);
   const chooseCompanionFile = useCallback(async () => {
     if (!path.toLowerCase().endsWith(".html")) return;
     const selected = await pickCompanionFile();
@@ -212,7 +248,6 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pic
       setError(previous.error);
       setPath(previous.path);
       setCompanionPath(previous.companionPath);
-      setDisplayName(previous.displayName);
       setHeaders(previous.headers);
       setMapping(previous.mapping);
       setBom(previous.bom);
@@ -231,7 +266,7 @@ export function useBomImport({ api = defaultApi, pickFile = defaultPickFile, pic
     const next = createAnalysisRows(bom, parts, Object.fromEntries(rows.map((row) => [row.componentKey, row.partId ?? ""]).filter(([, id]) => id).concat([[componentKey, partId]])));
     setRows(next);
   }, [bom, parts, rows]);
-  return { status, error, path, companionPath, displayName, setDisplayName, headers, mapping, setMapping, bom, rows, activated: Boolean(activatedPath) && activatedPath === path, chooseFile, chooseCompanionFile, inspect, activate, submitMapping, cancelMapping, confirmMatch, fieldNames };
+  return { status, error, path, companionPath, headers, mapping, setMapping, bom, rows, activated, historyId, chooseFile, chooseCompanionFile, inspect, activate, loadCached, clearLoaded, submitMapping, cancelMapping, confirmMatch, fieldNames };
 }
 
 export { fieldNames };

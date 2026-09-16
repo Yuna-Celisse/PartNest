@@ -138,21 +138,12 @@ pub fn parse_interactive_html_text_with_companion(
                     .unwrap_or_default()
             });
             let component_key = if component_key.is_empty() {
-                resolve_component_key(item, comp_info)?
+                resolve_component_key(item, comp_info)
             } else {
                 component_key
             };
             let metadata = if companion_group.is_none() {
-                Some(
-                    comp_info
-                        .get(&component_key)
-                        .and_then(Value::as_object)
-                        .ok_or_else(|| {
-                            unsupported(format!(
-                                "component {component_key:?} is missing from comp_info"
-                            ))
-                        })?,
-                )
+                comp_info.get(&component_key).and_then(Value::as_object)
             } else {
                 None
             };
@@ -161,10 +152,10 @@ pub fn parse_interactive_html_text_with_companion(
                     .entry(component_key.clone())
                     .or_insert_with(|| match companion_group {
                         Some(group) => group_from_companion(component_key.clone(), group),
-                        None => group_from_metadata(
-                            component_key.clone(),
-                            metadata.expect("metadata exists without companion"),
-                        ),
+                        None => match metadata {
+                            Some(metadata) => group_from_metadata(component_key.clone(), metadata),
+                            None => group_from_designator_entry(component_key.clone(), item),
+                        },
                     });
             group.quantity += 1;
             group.designators.push(designator.clone());
@@ -509,27 +500,66 @@ fn first_text(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<
 fn resolve_component_key(
     entry: &serde_json::Map<String, Value>,
     comp_info: &serde_json::Map<String, Value>,
-) -> Result<String, InteractiveHtmlError> {
+) -> String {
     // Callers only reach this path after the explicit keys came back empty, so
-    // the remaining option is a unique, case-insensitive identity match.
-    let Some(component_name) = first_text(entry, &["cm", "component_name", "name", "value"]) else {
-        return Err(unsupported("designator entry has no component key"));
-    };
-    let candidates = comp_info
-        .iter()
-        .filter_map(|(key, value)| {
-            let metadata = value.as_object()?;
-            let matches = ["Name", "name", "value", "Value"]
-                .iter()
-                .filter_map(|field| metadata.get(*field).and_then(value_text))
-                .any(|text| text.eq_ignore_ascii_case(&component_name));
-            matches.then(|| key.clone())
-        })
-        .collect::<Vec<_>>();
-    match candidates.as_slice() {
-        [key] => Ok(key.clone()),
-        [] => Err(unsupported("designator entry has no component key")),
-        _ => Err(unsupported("ambiguous component key for designator entry")),
+    // the remaining options are a unique name match or the entry's own identity.
+    let component_name = first_text(entry, &["cm", "component_name", "name", "value"]);
+    if let Some(component_name) = &component_name {
+        let candidates = comp_info
+            .iter()
+            .filter_map(|(key, value)| {
+                let metadata = value.as_object()?;
+                let matches = ["Name", "name", "value", "Value"]
+                    .iter()
+                    .filter_map(|field| metadata.get(*field).and_then(value_text))
+                    .any(|text| text.eq_ignore_ascii_case(component_name));
+                matches.then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        if let [key] = candidates.as_slice() {
+            return key.clone();
+        }
+    }
+    // EasyEDA leaves `lc_code` empty for parts with no supplier code, and then
+    // comp_info has no entry for them. Keying on name plus footprint keeps
+    // distinct parts apart instead of merging them into one anonymous group.
+    let package = first_text(entry, &["ft_name", "package", "footprint"]).unwrap_or_default();
+    match component_name {
+        Some(name) => format!("part:{name}+{package}"),
+        None => format!(
+            "part:{}",
+            first_text(entry, &["deviceUuid", "uuid", "id"]).unwrap_or(package)
+        ),
+    }
+}
+
+/// Group metadata for a placement that comp_info does not describe.
+fn group_from_designator_entry(
+    component_key: String,
+    entry: &serde_json::Map<String, Value>,
+) -> BomGroupDto {
+    // EasyEDA renders `cm` in the 器件型号 column for parts without a supplier
+    // code, so it doubles as the manufacturer part number for matching.
+    let component_name = metadata_text(entry, &["cm", "component_name", "name", "value"]);
+    let mpn = metadata_text(
+        entry,
+        &["Manufacturer Part", "manufacturer_part", "MPN", "mpn"],
+    );
+    BomGroupDto {
+        component_key,
+        name: component_name.clone(),
+        value: metadata_text(entry, &["value", "Value"]),
+        package: metadata_text(entry, &["ft_name", "package", "footprint"]),
+        manufacturer: metadata_text(entry, &["Manufacturer", "manufacturer"]),
+        mpn: if mpn.is_empty() { component_name } else { mpn },
+        lcsc_code: metadata_text(
+            entry,
+            &["Supplier Part", "supplier_part", "LCSC", "lcsc_code"],
+        ),
+        quantity: 0,
+        designators: Vec::new(),
+        placements: Vec::new(),
+        extra_fields: BTreeMap::new(),
     }
 }
 
