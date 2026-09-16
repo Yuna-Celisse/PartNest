@@ -1,3 +1,6 @@
 packages:
   - apps/*
   - packages/*
+allowBuilds:
+  esbuild: false
+  pnpm: set this to true or false
