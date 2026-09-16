@@ -494,3 +494,77 @@ fn restore_rejects_a_hard_link_to_the_live_database() {
         Err(BackupError::Invalid(message)) if message.contains("硬链接")
     ));
 }
+
+#[test]
+fn backup_restores_archived_parts_and_reused_lcsc_without_resurrecting_stock() {
+    use partnest_desktop_lib::commands::movements::list_movements_service;
+    use partnest_desktop_lib::commands::parts::{delete_part_service, list_parts_service};
+    let root = tempdir().unwrap();
+    let mut db = seed_database(&root.path().join("partnest.db"));
+    db.connection()
+        .execute(
+            "UPDATE parts SET lcsc_code = 'C123' WHERE id = 'part-1'",
+            [],
+        )
+        .unwrap();
+    delete_part_service(&db, "part-1").unwrap();
+    db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('part-2', 'Second', 'C123', 0)", []).unwrap();
+    delete_part_service(&db, "part-2").unwrap();
+    db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('part-3', 'Current', 'C123', 0)", []).unwrap();
+    let expected_history = list_movements_service(&db).unwrap();
+    let backup = create_backup(&db, root.path()).unwrap();
+    validate_backup(&backup).unwrap();
+    delete_part_service(&db, "part-3").unwrap();
+    restore_database_file(&mut db, &backup).unwrap();
+    let live = list_parts_service(&db, None).unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, "part-3");
+    assert_eq!(list_movements_service(&db).unwrap(), expected_history);
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM parts WHERE deleted_at IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT quantity FROM parts WHERE id = 'part-1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        4
+    );
+}
+
+#[test]
+fn backup_validation_rejects_missing_archive_column_or_unscoped_lcsc_index() {
+    let root = tempdir().unwrap();
+    let db = seed_database(&root.path().join("partnest.db"));
+    let backup = create_backup(&db, root.path()).unwrap();
+    let conn = Connection::open(&backup).unwrap();
+    conn.execute_batch(
+        "DROP INDEX parts_lcsc_code_unique;
+        CREATE UNIQUE INDEX parts_lcsc_code_unique ON parts (lcsc_code COLLATE NOCASE)
+        WHERE lcsc_code IS NOT NULL AND trim(lcsc_code) <> '';",
+    )
+    .unwrap();
+    drop(conn);
+    assert!(matches!(
+        validate_backup(&backup),
+        Err(BackupError::Invalid(_))
+    ));
+    let conn = Connection::open(&backup).unwrap();
+    conn.execute_batch("ALTER TABLE parts DROP COLUMN deleted_at;")
+        .unwrap();
+    drop(conn);
+    assert!(matches!(
+        validate_backup(&backup),
+        Err(BackupError::Invalid(_))
+    ));
+}

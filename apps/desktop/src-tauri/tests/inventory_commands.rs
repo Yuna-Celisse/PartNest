@@ -147,6 +147,47 @@ fn stale_version_update_returns_conflict() {
 }
 
 #[test]
+fn editing_zero_stock_can_add_initial_quantity_and_audits_restock() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 0)).unwrap();
+    let mut input = part_input(box_record.id, "A1", 4);
+    input.name = "restocked resistor".into();
+    let updated = update_part_service(&db, &part.id, part.version, input).unwrap();
+    assert_eq!(updated.quantity, 4);
+    assert_eq!(updated.slot.as_deref(), Some("A1"));
+    assert_eq!(db.connection().query_row(
+        "SELECT movement_type, quantity, before_quantity, after_quantity, reason FROM inventory_movements WHERE part_id = ?1",
+        [&part.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, String>(4)?))
+    ).unwrap(), ("in".into(), 4, 0, 4, "restock during edit".into()));
+}
+
+#[test]
+fn editing_positive_stock_keeps_quantity_on_metadata_update() {
+    let db = database();
+    let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
+    let part = create_part_service(&db, part_input(box_record.id, "A0", 3)).unwrap();
+    let updated = update_part_service(
+        &db,
+        &part.id,
+        part.version,
+        part_input(box_record.id, "A0", 99),
+    )
+    .unwrap();
+    assert_eq!(updated.quantity, 3);
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM inventory_movements WHERE part_id = ?1",
+                [&part.id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn list_parts_filters_by_name_and_mpn() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
@@ -318,18 +359,36 @@ fn updating_part_moves_between_boxes_and_rejects_an_occupied_destination() {
 }
 
 #[test]
-fn part_and_box_deletion_rejects_audited_or_occupied_records() {
+fn deletion_archives_audited_parts_and_releases_their_box() {
     let db = database();
     let box_record = create_box_service(&db, box_input(2, 2)).unwrap();
     let part = create_part_service(&db, part_input(box_record.id, "A0", 1)).unwrap();
     assert!(matches!(
-        delete_part_service(&db, &part.id),
-        Err(CommandError::Constraint(_))
-    ));
-    assert!(matches!(
         delete_box_service(&db, box_record.id),
         Err(CommandError::Constraint(_))
     ));
+    delete_part_service(&db, &part.id).unwrap();
+    assert!(list_parts_service(&db, None).unwrap().is_empty());
+    assert!(list_boxes_service(&db).unwrap()[0]
+        .occupied_slots
+        .is_empty());
+    let archived: (String, i64, Option<i64>, Option<String>, i64, bool) = db.connection().query_row(
+        "SELECT name, quantity, box_id, slot, version, deleted_at IS NOT NULL FROM parts WHERE id = ?1",
+        [&part.id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+    ).unwrap();
+    assert_eq!(archived, (part.name, 1, None, None, part.version + 1, true));
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM inventory_movements WHERE part_id = ?1",
+                [&part.id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    delete_box_service(&db, box_record.id).unwrap();
     let empty_box = create_box_service(&db, box_input(1, 1)).unwrap();
     let renamed = update_box_service(
         &db,
@@ -346,7 +405,7 @@ fn part_and_box_deletion_rejects_audited_or_occupied_records() {
 }
 
 #[test]
-fn deleting_legacy_positive_stock_is_rejected_without_an_audit_row() {
+fn deleting_legacy_positive_stock_preserves_its_historical_quantity() {
     let db = database();
     let box_record = create_box_service(&db, box_input(1, 2)).unwrap();
     db.connection()
@@ -361,10 +420,25 @@ fn deleting_legacy_positive_stock_is_rejected_without_an_audit_row() {
             row.get(0)
         })
         .unwrap();
-    assert!(matches!(
-        delete_part_service(&db, &legacy_id),
-        Err(CommandError::Constraint(_))
-    ));
+    delete_part_service(&db, &legacy_id).unwrap();
+    assert!(list_parts_service(&db, None).unwrap().is_empty());
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT quantity FROM parts WHERE id = ?1",
+                [&legacy_id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        db.connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -401,5 +475,60 @@ fn lcsc_display_name_keeps_an_unrecognized_model_unchanged() {
     assert_eq!(
         format_lcsc_display_name("RC0402FR-075K1L", "R0402"),
         "RC0402FR-075K1L"
+    );
+}
+
+#[test]
+fn deleted_parts_cannot_be_mutated_and_their_slot_and_lcsc_can_be_reused() {
+    let db = database();
+    let b = create_box_service(&db, box_input(2, 2)).unwrap();
+    let input = part_input(b.id, "A0", 7);
+    let original = create_part_service(&db, input.clone()).unwrap();
+    delete_part_service(&db, &original.id).unwrap();
+    assert!(list_parts_service(&db, Some("C123")).unwrap().is_empty());
+    assert!(matches!(
+        delete_part_service(&db, &original.id),
+        Err(CommandError::NotFound(_))
+    ));
+    assert!(matches!(
+        delete_part_service(&db, "missing"),
+        Err(CommandError::NotFound(_))
+    ));
+    assert!(matches!(
+        update_part_service(&db, &original.id, original.version, input.clone()),
+        Err(CommandError::NotFound(_))
+    ));
+    assert!(matches!(
+        adjust_stock_service(&db, &original.id, 1, "restock"),
+        Err(CommandError::NotFound(_))
+    ));
+    let replacement = create_part_service(&db, input).unwrap();
+    assert_ne!(replacement.id, original.id);
+    assert_eq!(list_parts_service(&db, None).unwrap().len(), 1);
+    assert_eq!(
+        list_boxes_service(&db).unwrap()[0].occupied_slots,
+        vec!["A0"]
+    );
+    let mut duplicate = part_input(b.id, "A1", 1);
+    duplicate.lcsc_code = " c123 ".into();
+    assert!(matches!(
+        create_part_service(&db, duplicate),
+        Err(CommandError::Constraint(_))
+    ));
+}
+
+#[test]
+fn zero_stock_parts_can_be_deleted_without_creating_movements() {
+    let db = database();
+    let b = create_box_service(&db, box_input(1, 1)).unwrap();
+    let part = create_part_service(&db, part_input(b.id, "A0", 0)).unwrap();
+    delete_part_service(&db, &part.id).unwrap();
+    assert!(list_parts_service(&db, None).unwrap().is_empty());
+    assert_eq!(
+        db.connection()
+            .query_row("SELECT COUNT(*) FROM inventory_movements", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }

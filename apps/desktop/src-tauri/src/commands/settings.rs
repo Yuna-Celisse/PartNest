@@ -4,6 +4,43 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
+/// Back up first, then clear business records atomically, preserving migrations.
+pub fn reset_data_service(
+    database: &Database,
+    runtime: &InteractiveBomRuntime,
+    backup_directory: &std::path::Path,
+) -> Result<String, CommandError> {
+    let path = backup::create_backup(database, backup_directory)?;
+    let tx = database.transaction()?;
+    tx.execute_batch(
+        "PRAGMA defer_foreign_keys = ON;
+         DELETE FROM inventory_movements;
+         DELETE FROM welding_progress;
+         DELETE FROM welding_sessions;
+         DELETE FROM bom_files;
+         DELETE FROM parts;
+         DELETE FROM boxes;
+         DELETE FROM lcsc_cache;",
+    )?;
+    runtime
+        .invalidate_active_session()
+        .map_err(|error| CommandError::Database(error.to_string()))?;
+    tx.commit()?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command(rename = "reset_data")]
+pub fn reset_data(
+    app: AppHandle,
+    state: State<'_, Mutex<Database>>,
+    runtime: State<'_, Mutex<InteractiveBomRuntime>>,
+) -> Result<String, CommandError> {
+    let directory = app_data_directory(&app)?;
+    let database = state.lock().map_err(lock_error)?;
+    let runtime = runtime.lock().map_err(lock_error)?;
+    reset_data_service(&database, &runtime, &backup::backup_dir(directory))
+}
+
 fn app_data_directory(app: &AppHandle) -> Result<PathBuf, CommandError> {
     app.path()
         .app_data_dir()

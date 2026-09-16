@@ -1,10 +1,11 @@
 use partnest_desktop_lib::bom::cache::InteractiveBomRuntime;
 use partnest_desktop_lib::bom::types::BomSide;
 use partnest_desktop_lib::commands::boxes::{create_box_service, BoxInput};
-use partnest_desktop_lib::commands::parts::{create_part_service, PartInput};
+use partnest_desktop_lib::commands::movements::list_movements_service;
+use partnest_desktop_lib::commands::parts::{create_part_service, delete_part_service, PartInput};
 use partnest_desktop_lib::commands::welding::{
-    confirm_take_authorized_service, confirm_take_service, get_welding_progress_service,
-    reverse_take_service, ConfirmTakeInput,
+    confirm_take_authorized_service, confirm_take_service, end_welding_session_service,
+    get_welding_progress_service, reverse_take_service, ConfirmTakeInput,
 };
 use partnest_desktop_lib::commands::CommandError;
 use partnest_desktop_lib::db::{new_id, Database, Migration};
@@ -88,11 +89,11 @@ fn take_designating(
 fn top_and_bottom_takes_are_independent_and_additional_take_is_a_new_movement() {
     let (db, session_id, part_id) = fixture();
     let top = confirm_take_service(&db, take(&session_id, &part_id, BomSide::Top, 2)).unwrap();
-    let mut bottom_input = take(&session_id, &part_id, BomSide::Bottom, 1);
+    let mut bottom_input = take_designating(&session_id, &part_id, BomSide::Bottom, 1, &["R2"]);
     bottom_input.expected_part_version = top.part_version;
     let bottom = confirm_take_service(&db, bottom_input).unwrap();
 
-    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R2"]);
+    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R3"]);
     additional.expected_part_version = bottom.part_version;
     let extra = confirm_take_service(&db, additional).unwrap();
     assert_ne!(top.movement_id, extra.movement_id);
@@ -298,12 +299,12 @@ fn complete_sequence_keeps_side_status_and_quantities_independent() {
     let top = confirm_take_service(&db, top_input).unwrap();
     assert_eq!(top.status, "partial");
 
-    let mut bottom_input = take(&session_id, &part_id, BomSide::Bottom, 1);
+    let mut bottom_input = take_designating(&session_id, &part_id, BomSide::Bottom, 1, &["R2"]);
     bottom_input.expected_part_version = top.part_version;
     let bottom = confirm_take_service(&db, bottom_input).unwrap();
     assert_eq!(bottom.status, "partial");
 
-    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R2"]);
+    let mut additional = take_designating(&session_id, &part_id, BomSide::Top, 1, &["R3"]);
     additional.expected_part_version = bottom.part_version;
     let top_done = confirm_take_service(&db, additional).unwrap();
     assert_eq!(top_done.status, "taken");
@@ -497,4 +498,181 @@ fn migration_0002_upgrades_existing_welding_databases() {
     assert!(columns.iter().any(|column| column == "side"));
     assert!(columns.iter().any(|column| column == "before_quantity"));
     assert!(columns.iter().any(|column| column == "movement_sequence"));
+}
+
+#[test]
+fn deleting_active_stock_preserves_progress_and_allows_replacement_for_fresh_placements() {
+    let (db, session, old_part) = fixture();
+    let first = confirm_take_service(&db, take(&session, &old_part, BomSide::Top, 1)).unwrap();
+    let before = get_welding_progress_service(&db, &session).unwrap();
+    delete_part_service(&db, &old_part).unwrap();
+    let archived_progress = get_welding_progress_service(&db, &session).unwrap();
+    assert_eq!(archived_progress[0].part_id, None);
+    assert_eq!(
+        archived_progress[0].confirmed_designators,
+        before[0].confirmed_designators
+    );
+    assert_eq!(archived_progress[0].consumed_quantity, 1);
+    assert_eq!(archived_progress[0].required_quantity, 3);
+    assert!(matches!(
+        confirm_take_service(&db, take(&session, &old_part, BomSide::Top, 1)),
+        Err(CommandError::NotFound(_))
+    ));
+    assert!(matches!(
+        reverse_take_service(&db, &first.movement_id),
+        Err(CommandError::NotFound(_))
+    ));
+
+    let box_id = db
+        .connection()
+        .query_row("SELECT id FROM boxes LIMIT 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    let replacement = create_part_service(
+        &db,
+        PartInput {
+            name: "Replacement resistor".into(),
+            category: "resistor".into(),
+            package: "0603".into(),
+            manufacturer: "Acme".into(),
+            mpn: "R-10K".into(),
+            lcsc_code: "C123".into(),
+            quantity: 5,
+            box_id: Some(box_id),
+            slot: Some("A0".into()),
+            note: String::new(),
+        },
+    )
+    .unwrap();
+    // R1 was consumed before deletion and must never be charged to new stock.
+    assert!(matches!(
+        confirm_take_service(&db, take(&session, &replacement.id, BomSide::Top, 1)),
+        Err(CommandError::Validation(_))
+    ));
+    let second = confirm_take_service(
+        &db,
+        take_designating(&session, &replacement.id, BomSide::Top, 1, &["R2"]),
+    )
+    .unwrap();
+    assert_eq!(second.consumed_quantity, 2);
+    let progress = get_welding_progress_service(&db, &session).unwrap();
+    assert_eq!(
+        progress[0].part_id.as_deref(),
+        Some(replacement.id.as_str())
+    );
+    assert_eq!(progress[0].confirmed_designators, vec!["R1", "R2"]);
+    assert!(matches!(
+        reverse_take_service(&db, &first.movement_id),
+        Err(CommandError::NotFound(_))
+    ));
+    let reversed = reverse_take_service(&db, &second.movement_id).unwrap();
+    assert_eq!(reversed.consumed_quantity, 1);
+    assert_eq!(
+        get_welding_progress_service(&db, &session).unwrap()[0].confirmed_designators,
+        vec!["R1"]
+    );
+    let stocks: (i64, i64) = db.connection().query_row(
+        "SELECT (SELECT quantity FROM parts WHERE id = ?1), (SELECT quantity FROM parts WHERE id = ?2)",
+        rusqlite::params![old_part, replacement.id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(stocks, (9, 5));
+    let movements = partnest_desktop_lib::commands::movements::list_movements_service(&db).unwrap();
+    let archived_take = movements
+        .iter()
+        .find(|m| m.id == first.movement_id)
+        .unwrap();
+    assert_eq!(archived_take.part_name.as_deref(), Some("10k resistor"));
+    assert!(!archived_take.reversible);
+}
+
+#[test]
+fn deleting_stock_keeps_completed_session_part_associations() {
+    let (db, session, part) = fixture();
+    confirm_take_service(&db, take(&session, &part, BomSide::Top, 1)).unwrap();
+    db.connection()
+        .execute(
+            "UPDATE welding_sessions SET status = 'completed' WHERE id = ?1",
+            [&session],
+        )
+        .unwrap();
+    let before = get_welding_progress_service(&db, &session).unwrap();
+    delete_part_service(&db, &part).unwrap();
+    assert_eq!(get_welding_progress_service(&db, &session).unwrap(), before);
+}
+
+#[test]
+fn failed_progress_detachment_rolls_back_the_entire_deletion() {
+    let (db, session, part) = fixture();
+    confirm_take_service(&db, take(&session, &part, BomSide::Top, 1)).unwrap();
+    let before = partnest_desktop_lib::commands::parts::list_parts_service(&db, None).unwrap();
+    let progress = get_welding_progress_service(&db, &session).unwrap();
+    db.connection()
+        .execute_batch(
+            "CREATE TRIGGER fail_detachment BEFORE UPDATE OF part_id ON welding_progress
+        BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;",
+        )
+        .unwrap();
+    assert!(delete_part_service(&db, &part).is_err());
+    assert_eq!(
+        partnest_desktop_lib::commands::parts::list_parts_service(&db, None).unwrap(),
+        before
+    );
+    assert_eq!(
+        get_welding_progress_service(&db, &session).unwrap(),
+        progress
+    );
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT deleted_at FROM parts WHERE id = ?1",
+                [&part],
+                |row| row.get::<_, Option<String>>(0)
+            )
+            .unwrap(),
+        None
+    );
+}
+
+fn stock_of(db: &Database, part_id: &str) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT quantity FROM parts WHERE id = ?1",
+            [part_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn leaving_a_session_keeps_taken_stock_deducted_and_still_allows_corrections() {
+    let (db, session_id, part_id) = fixture();
+    let taken = confirm_take_service(&db, take(&session_id, &part_id, BomSide::Top, 2)).unwrap();
+    assert_eq!(stock_of(&db, &part_id), 8);
+
+    end_welding_session_service(&db, &session_id).unwrap();
+
+    // 退出会话不退回已取用的库存。
+    assert_eq!(stock_of(&db, &part_id), 8);
+
+    // 结束后不能再产生新的取用。
+    let blocked = confirm_take_service(
+        &db,
+        take_designating(&session_id, &part_id, BomSide::Top, 1, &["R2"]),
+    )
+    .expect_err("an ended session cannot take parts");
+    assert!(matches!(blocked, CommandError::NotFound(_)));
+
+    // 已经发生的取用仍可撤销，用于纠正错拿。
+    let movement = list_movements_service(&db)
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == taken.movement_id)
+        .expect("the take movement stays listed");
+    assert!(movement.reversible, "a take stays reversible");
+    let reversed = reverse_take_service(&db, &taken.movement_id).unwrap();
+    assert_eq!(reversed.status, "pending");
+    assert_eq!(stock_of(&db, &part_id), 10);
+
+    assert!(end_welding_session_service(&db, &session_id).is_err());
 }

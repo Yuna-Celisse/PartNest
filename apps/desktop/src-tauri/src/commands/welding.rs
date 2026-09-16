@@ -44,6 +44,29 @@ pub fn get_welding_progress_service(
     welding_repository::get_welding_progress(db, session_id)
 }
 
+/// Leave the current welding session. Already taken parts stay deducted; only
+/// new takes are stopped.
+pub fn end_welding_session_service(db: &Database, session_id: &str) -> Result<(), CommandError> {
+    welding_repository::end_welding_session(db, session_id)
+}
+
+#[tauri::command(rename = "end_welding_session")]
+pub fn end_welding_session(
+    session_id: String,
+    database: State<'_, Mutex<Database>>,
+    runtime: State<'_, Mutex<InteractiveBomRuntime>>,
+) -> Result<(), CommandError> {
+    let database = database.lock().map_err(super::lock_error)?;
+    end_welding_session_service(&database, &session_id)?;
+    drop(database);
+    // The bridge token dies with the session, so a stale workspace frame cannot
+    // charge anything further.
+    let runtime = runtime.lock().map_err(super::lock_error)?;
+    runtime
+        .invalidate_active_session()
+        .map_err(|error| CommandError::Database(error.to_string()))
+}
+
 #[tauri::command(rename = "confirm_take")]
 pub fn confirm_take(
     input: ConfirmTakeInput,

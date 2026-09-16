@@ -771,3 +771,48 @@ fn migration_backfills_confirmed_designators_from_surviving_take_movements() {
     assert_eq!(confirmed("C1"), ["R1".to_owned(), "R2".to_owned()]);
     assert_eq!(confirmed("C9"), Vec::<String>::new());
 }
+
+#[test]
+fn soft_delete_migration_preserves_v8_inventory_and_frees_only_archived_codes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("upgrade.db");
+    let migrations = partnest_desktop_lib::db::migrations();
+    let db = Database::open_with_migrations(&path, &migrations[..8]).unwrap();
+    db.connection().execute_batch("INSERT INTO boxes (id, name, rows, cols) VALUES (1, 'Bench', 2, 2);
+        INSERT INTO parts (id, name, lcsc_code, quantity, box_id, slot) VALUES ('old', 'Resistor', 'C123', 7, 1, 'A0');
+        INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason) VALUES ('history', 'old', 'in', 7, 'initial');").unwrap();
+    drop(db);
+    let db = Database::open(&path).unwrap();
+    let original: (String, i64, Option<String>) = db
+        .connection()
+        .query_row(
+            "SELECT name, quantity, deleted_at FROM parts WHERE id = 'old'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(original, ("Resistor".into(), 7, None));
+    assert!(db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('duplicate', 'Duplicate', 'c123', 0)", []).is_err());
+    partnest_desktop_lib::commands::parts::delete_part_service(&db, "old").unwrap();
+    db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity, box_id, slot) VALUES ('replacement', 'New', 'C123', 3, 1, 'A0')", []).unwrap();
+    assert!(db.connection().execute("INSERT INTO parts (id, name, lcsc_code, quantity) VALUES ('duplicate', 'Duplicate', 'c123', 0)", []).is_err());
+    assert_eq!(
+        db.connection()
+            .query_row(
+                "SELECT part_id FROM inventory_movements WHERE id = 'history'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "old"
+    );
+    let parts = partnest_desktop_lib::commands::parts::list_parts_service(&db, None).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].id, "replacement");
+    drop(db);
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        partnest_desktop_lib::commands::parts::list_parts_service(&reopened, None).unwrap(),
+        parts
+    );
+}

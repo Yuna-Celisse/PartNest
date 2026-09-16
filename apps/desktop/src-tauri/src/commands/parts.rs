@@ -394,7 +394,7 @@ fn validate_input(
 fn read_part(db: &Database, id: &str) -> Result<PartView, CommandError> {
     db.connection()
         .query_row(
-            "SELECT id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note, version FROM parts WHERE id = ?1",
+            "SELECT id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note, version FROM parts WHERE id = ?1 AND deleted_at IS NULL",
             [id],
             |row| Ok(PartView {
                 id: row.get(0)?, name: row.get(1)?, category: row.get(2)?, package: row.get(3)?,
@@ -410,7 +410,7 @@ pub fn list_parts_service(
     db: &Database,
     search: Option<&str>,
 ) -> Result<Vec<PartView>, CommandError> {
-    let mut statement = db.connection().prepare("SELECT id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note, version FROM parts ORDER BY name COLLATE NOCASE, id")?;
+    let mut statement = db.connection().prepare("SELECT id, name, category, package, manufacturer, mpn, lcsc_code, quantity, box_id, slot, note, version FROM parts WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE, id")?;
     let rows = statement.query_map([], |row| {
         Ok(PartView {
             id: row.get(0)?,
@@ -476,34 +476,38 @@ pub fn update_part_service(
     expected_version: i64,
     input: PartInput,
 ) -> Result<PartView, CommandError> {
-    let quantity: i64 = db
-        .connection()
-        .query_row("SELECT quantity FROM parts WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
+    let transaction = db.transaction()?;
+    let quantity: i64 = transaction
+        .query_row(
+            "SELECT quantity FROM parts WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |row| row.get(0),
+        )
         .optional()?
         .ok_or_else(|| CommandError::NotFound("器件不存在".into()))?;
-    let new_quantity = if quantity == 0 {
+    let name = validate_name(&input.name, "器件")?;
+    // Existing stock is changed only through adjust_stock. A zero-stock item
+    // may be stocked during editing because it has no live location yet.
+    let target_quantity = if quantity == 0 {
         input.quantity
     } else {
         quantity
     };
-    let name = validate_name(&input.name, "器件")?;
-    let (box_id, slot) = validate_input(db, &input, new_quantity)?;
+    let (box_id, slot) = validate_input(db, &input, target_quantity)?;
     let lcsc_code = normalize_input_lcsc_code(&input.lcsc_code)?;
-    let transaction = db.transaction()?;
+    let now = utc_now();
     let changed = transaction.execute(
-        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, box_id = ?7, slot = ?8, note = ?9, quantity = ?13, version = version + 1, updated_at = ?10 WHERE id = ?11 AND version = ?12",
-        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), lcsc_code, box_id, slot, optional_text(&input.note), utc_now(), id, expected_version, new_quantity],
+        "UPDATE parts SET name = ?1, category = ?2, package = ?3, manufacturer = ?4, mpn = ?5, lcsc_code = ?6, quantity = ?7, box_id = ?8, slot = ?9, note = ?10, version = version + 1, updated_at = ?11 WHERE id = ?12 AND version = ?13 AND deleted_at IS NULL",
+        params![name, optional_text(&input.category), optional_text(&input.package), optional_text(&input.manufacturer), optional_text(&input.mpn), lcsc_code, target_quantity, box_id, slot, optional_text(&input.note), now, id, expected_version],
     )?;
     if changed != 1 {
         return Err(CommandError::Conflict);
     }
-    if new_quantity > quantity {
+    if quantity == 0 && target_quantity > 0 {
         let sequence = next_movement_sequence(&transaction)?;
         transaction.execute(
             "INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence) VALUES (?1, ?2, 'in', ?3, ?4, ?5, ?6, ?7)",
-            params![new_id(), id, new_quantity - quantity, "restock", quantity, new_quantity, sequence],
+            params![new_id(), id, target_quantity, "restock during edit", 0_i64, target_quantity, sequence],
         )?;
     }
     transaction.commit()?;
@@ -522,9 +526,11 @@ pub fn adjust_stock_service(
     }
     let transaction = db.transaction()?;
     let quantity: i64 = transaction
-        .query_row("SELECT quantity FROM parts WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT quantity FROM parts WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |row| row.get(0),
+        )
         .optional()?
         .ok_or_else(|| CommandError::NotFound("器件不存在".into()))?;
     let new_quantity = quantity
@@ -535,7 +541,7 @@ pub fn adjust_stock_service(
     }
     let sequence = next_movement_sequence(&transaction)?;
     transaction.execute(
-        "UPDATE parts SET quantity = ?1, box_id = CASE WHEN ?1 = 0 THEN NULL ELSE box_id END, slot = CASE WHEN ?1 = 0 THEN NULL ELSE slot END, version = version + 1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE parts SET quantity = ?1, box_id = CASE WHEN ?1 = 0 THEN NULL ELSE box_id END, slot = CASE WHEN ?1 = 0 THEN NULL ELSE slot END, version = version + 1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
         params![new_quantity, utc_now(), id],
     )?;
     transaction.execute("INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, before_quantity, after_quantity, movement_sequence) VALUES (?1, ?2, 'adjust', ?3, ?4, ?5, ?6, ?7)", params![new_id(), id, delta, reason, quantity, new_quantity, sequence])?;
@@ -543,39 +549,36 @@ pub fn adjust_stock_service(
     read_part(db, id)
 }
 
-/// A part is an audited business record. Once it has movements or welding
-/// progress, deletion would orphan history, so the command rejects it.
+/// Archive an inventory item without losing its audited stock or identity.
+/// Quantity is retained only as the baseline for legacy movement reconstruction.
 pub fn delete_part_service(db: &Database, id: &str) -> Result<(), CommandError> {
-    let quantity: Option<i64> = db
-        .connection()
-        .query_row("SELECT quantity FROM parts WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    let Some(quantity) = quantity else {
-        return Err(CommandError::NotFound("器件不存在".into()));
-    };
-    let movement_count: i64 = db.connection().query_row(
-        "SELECT COUNT(*) FROM inventory_movements WHERE part_id = ?1",
-        [id],
-        |row| row.get(0),
+    let tx = rusqlite::Transaction::new_unchecked(
+        db.connection(),
+        rusqlite::TransactionBehavior::Immediate,
     )?;
-    let progress_count: i64 = db.connection().query_row(
-        "SELECT COUNT(*) FROM welding_progress WHERE part_id = ?1",
-        [id],
-        |row| row.get(0),
+    let version: i64 = tx
+        .query_row(
+            "SELECT version FROM parts WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| CommandError::NotFound("器件不存在或已删除".into()))?;
+    let next_version = version
+        .checked_add(1)
+        .ok_or_else(|| CommandError::Validation("器件版本超出范围".into()))?;
+    let now = utc_now();
+    tx.execute(
+        "UPDATE parts SET deleted_at = ?1, updated_at = ?1, version = ?2, box_id = NULL, slot = NULL WHERE id = ?3 AND deleted_at IS NULL",
+        params![now, next_version, id],
     )?;
-    if quantity != 0 || movement_count > 0 || progress_count > 0 {
-        return Err(CommandError::Constraint(
-            "已有库存流水或焊接记录，不能删除器件".into(),
-        ));
-    }
-    let changed = db
-        .connection()
-        .execute("DELETE FROM parts WHERE id = ?1", [id])?;
-    if changed != 1 {
-        return Err(CommandError::NotFound("器件不存在".into()));
-    }
+    // Keep confirmed placements and totals, but allow replacement stock to bind
+    // for fresh placements in the active session. Audit rows keep the old ID.
+    tx.execute(
+        "UPDATE welding_progress SET part_id = NULL, updated_at = ?1 WHERE part_id = ?2 AND session_id IN (SELECT id FROM welding_sessions WHERE status = 'active')",
+        params![now, id],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

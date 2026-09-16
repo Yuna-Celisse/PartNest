@@ -163,6 +163,37 @@ fn session_active(connection: &Connection, session_id: &str) -> Result<(), Comma
     Ok(())
 }
 
+fn session_exists(connection: &Connection, session_id: &str) -> Result<(), CommandError> {
+    let known = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM welding_sessions WHERE id = ?1)",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !known {
+        return Err(CommandError::NotFound("焊接会话不存在".into()));
+    }
+    Ok(())
+}
+
+/// End the workspace's active welding session. Its takes stay reversible: the
+/// board simply stops being the current session.
+pub fn end_welding_session(db: &Database, session_id: &str) -> Result<(), CommandError> {
+    if session_id.trim().is_empty() {
+        return Err(CommandError::Validation("焊接会话编号不能为空".into()));
+    }
+    let ended = db.connection().execute(
+        "UPDATE welding_sessions SET status = 'completed', updated_at = ?1 WHERE id = ?2 AND status = 'active'",
+        params![utc_now(), session_id],
+    )?;
+    if ended == 0 {
+        return Err(CommandError::NotFound("焊接会话不存在或已结束".into()));
+    }
+    Ok(())
+}
+
 fn result_from_progress(
     movement_id: String,
     input: &ConfirmTakeInput,
@@ -195,7 +226,7 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
 
     let (quantity, version): (i64, i64) = tx
         .query_row(
-            "SELECT quantity, version FROM parts WHERE id = ?1",
+            "SELECT quantity, version FROM parts WHERE id = ?1 AND deleted_at IS NULL",
             [&input.part_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -232,18 +263,32 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
             (required, consumed, parse_designators(&confirmed))
         })
         .unwrap_or((input.bom_quantity, 0, Vec::new()));
-    // A designator may only be charged once per session and side, otherwise the
-    // audit trail claims the same placement was consumed twice. Re-selecting an
+    // A designator identifies exactly one board position, so it may be charged
+    // once per session even when the operator switches the working side. Table
+    // BOMs without a side column would otherwise deduct the same placement twice.
+    let charged: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT confirmed_designators FROM welding_progress WHERE session_id = ?1 AND component_key = ?2",
+        )?;
+        let rows = statement
+            .query_map(params![input.session_id, input.component_key], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.iter().flat_map(|raw| parse_designators(raw)).collect()
+    };
+    // A designator may only be charged once per session, otherwise the audit
+    // trail claims the same placement was consumed twice. Re-selecting an
     // already taken placement is allowed as long as something new is charged.
     let fresh: Vec<String> = input
         .designators
         .iter()
-        .filter(|designator| !confirmed.contains(*designator))
+        .filter(|designator| !charged.contains(*designator))
         .cloned()
         .collect();
     if fresh.is_empty() {
         return Err(CommandError::Validation(
-            "当前板面所选位号均已取用，如需追加请重新选择位号，如需纠正请撤销取用流水".into(),
+            "所选位号均已取用，如需追加请重新选择位号，如需纠正请撤销取用流水".into(),
         ));
     }
     let confirmation_designators = designators_json(&fresh)?;
@@ -256,7 +301,7 @@ pub fn confirm_take(db: &Database, input: ConfirmTakeInput) -> Result<TakeResult
         .ok_or_else(|| CommandError::Validation("焊接数量超出范围".into()))?;
 
     tx.execute(
-        "UPDATE parts SET quantity = ?1, version = ?2, updated_at = ?3 WHERE id = ?4 AND version = ?5",
+        "UPDATE parts SET quantity = ?1, version = ?2, updated_at = ?3 WHERE id = ?4 AND version = ?5 AND deleted_at IS NULL",
         params![remaining, next_version, utc_now(), input.part_id, version],
     )?;
     let movement_id = new_id();
@@ -317,7 +362,9 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
     let component_key =
         component_key.ok_or_else(|| CommandError::Validation("取用流水缺少器件分组".into()))?;
     let side = side.ok_or_else(|| CommandError::Validation("取用流水缺少板面".into()))?;
-    session_active(&tx, &session_id)?;
+    // Reversing corrects inventory history rather than spending a live bridge
+    // authorization, so an ended session's takes stay reversible.
+    session_exists(&tx, &session_id)?;
     if tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM inventory_movements WHERE reverses_movement_id = ?1)",
         [movement_id],
@@ -330,7 +377,7 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
         .ok_or_else(|| CommandError::Validation("库存数量超出范围".into()))?;
     let (stock, version): (i64, i64) = tx
         .query_row(
-            "SELECT quantity, version FROM parts WHERE id = ?1",
+            "SELECT quantity, version FROM parts WHERE id = ?1 AND deleted_at IS NULL",
             [&part_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -344,7 +391,7 @@ pub fn reverse_take(db: &Database, movement_id: &str) -> Result<TakeResult, Comm
         .ok_or_else(|| CommandError::Validation("器件版本超出范围".into()))?;
     let sequence = next_movement_sequence(&tx)?;
     tx.execute(
-        "UPDATE parts SET quantity = ?1, version = ?2, updated_at = ?3 WHERE id = ?4 AND version = ?5",
+        "UPDATE parts SET quantity = ?1, version = ?2, updated_at = ?3 WHERE id = ?4 AND version = ?5 AND deleted_at IS NULL",
         params![next_stock, next_version, utc_now(), part_id, version],
     )?;
     let reversal_id = new_id();

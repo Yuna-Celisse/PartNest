@@ -160,6 +160,7 @@ export type DesktopApi = {
   getWeldingProgress: (sessionId: string) => Promise<WeldingProgress[]>;
   listMovements: () => Promise<Movement[]>;
   createBackup: () => Promise<string>;
+  resetData: () => Promise<string>;
   restoreBackup: (backupPath: string) => Promise<void>;
 };
 
@@ -183,6 +184,7 @@ export const desktopApi: DesktopApi = {
   getWeldingProgress: (sessionId) => invoke("get_welding_progress", { sessionId }),
   listMovements: () => invoke("list_movements"),
   createBackup: () => invoke("create_backup"),
+  resetData: () => invoke("reset_data"),
   restoreBackup: (backupPath) => invoke("restore_backup", { backupPath }),
 };
 

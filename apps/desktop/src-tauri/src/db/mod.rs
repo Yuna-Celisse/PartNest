@@ -21,6 +21,12 @@ const INTEGER_BOX_IDS_MIGRATION: &str = include_str!("../../migrations/0007_inte
 const CONFIRMED_DESIGNATORS_MIGRATION: &str =
     include_str!("../../migrations/0008_welding_confirmed_designators.sql");
 
+const SOFT_DELETE_PARTS_MIGRATION: &str =
+    include_str!("../../migrations/0009_soft_delete_parts.sql");
+
+const BOM_IMPORT_SNAPSHOT_MIGRATION: &str =
+    include_str!("../../migrations/0010_bom_import_snapshot.sql");
+
 /// The complete, ordered migration set used by every database open. Keeping it
 /// in one place lets tests compare it against the migration files on disk.
 pub fn migrations() -> Vec<Migration<'static>> {
@@ -56,6 +62,14 @@ pub fn migrations() -> Vec<Migration<'static>> {
         Migration {
             version: 8,
             sql: CONFIRMED_DESIGNATORS_MIGRATION,
+        },
+        Migration {
+            version: 9,
+            sql: SOFT_DELETE_PARTS_MIGRATION,
+        },
+        Migration {
+            version: 10,
+            sql: BOM_IMPORT_SNAPSHOT_MIGRATION,
         },
     ]
 }
