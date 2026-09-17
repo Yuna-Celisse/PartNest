@@ -36,10 +36,10 @@ describe("AppShell", () => {
 
   it("shows one route title in the page toolbar", () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("link", { name: "BOM" }));
+    fireEvent.click(screen.getByRole("link", { name: "项目" }));
 
-    expect(screen.getByRole("toolbar", { name: "BOM 分析工具栏" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { name: "BOM 分析" })).toHaveLength(1);
+    expect(screen.getByRole("toolbar", { name: "项目工具栏" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 1, name: "项目" })).toHaveLength(1);
   });
 
   it("cleans page actions when a route is replaced", () => {

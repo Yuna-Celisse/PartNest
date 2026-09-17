@@ -19,7 +19,7 @@ const part = (overrides: Partial<Part> = {}): Part => ({
 });
 
 const session = {
-  session_id: "session-1", bom_file_id: "file-1", original_name: "board.html", display_name: "board",
+  session_id: "session-1", project_id: "p-1", project_name: "主板", original_name: "board.html",
   sha256: "hash", cache_name: "hash.html", cache_path: "C:\\Users\\test\\AppData\\Roaming\\PartNest\\interactive-bom-cache\\hash.html", kind: "interactive", token: "token-1",
   normalized: {
     source_name: "board.html",
@@ -35,7 +35,7 @@ const session = {
 
 function makeApi(overrides: Partial<WeldingApi> = {}): WeldingApi {
   return {
-    restoreActiveInteractiveBom: vi.fn().mockResolvedValue(session),
+    restoreActiveWeldingSession: vi.fn().mockResolvedValue(session),
     resolveBomSelection: vi.fn().mockResolvedValue({ session_id: "session-1", component_key: "C1", side: "top", designators: ["R1", "R2"] }),
     listParts: vi.fn().mockResolvedValue([part()]),
     confirmTake: vi.fn().mockResolvedValue({ movement_id: "move-1", session_id: "session-1", component_key: "C1", side: "top", part_id: "part-1", take_quantity: 2, required_quantity: 2, consumed_quantity: 2, taken_quantity: 2, status: "taken", part_version: 2 }),
@@ -47,7 +47,7 @@ function makeApi(overrides: Partial<WeldingApi> = {}): WeldingApi {
 /** A CSV/XLSX import: no canvas and, in this case, no recorded board sides. */
 const tabularSession = {
   ...session,
-  session_id: "session-2", bom_file_id: "file-2", original_name: "board.csv", display_name: "board.csv",
+  session_id: "session-2", project_id: "p-2", project_name: "板 B", original_name: "board.csv",
   sha256: "hash2", cache_name: "hash2.csv", cache_path: null, kind: "tabular",
   normalized: {
     source_name: "board.csv",
@@ -66,7 +66,7 @@ describe("WeldingPage", () => {
     const restore = vi.fn()
       .mockRejectedValueOnce(new Error("缓存 BOM 已损坏"))
       .mockResolvedValueOnce(session);
-    const api = makeApi({ restoreActiveInteractiveBom: restore });
+    const api = makeApi({ restoreActiveWeldingSession: restore });
     render(<WeldingPage api={api} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("缓存 BOM 已损坏");
@@ -76,55 +76,55 @@ describe("WeldingPage", () => {
   });
 
   it("keeps the empty state when no active BOM is restored", async () => {
-    const api = makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue(null) });
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue(null) });
     const navigate = vi.fn();
     render(<WeldingPage api={api} navigate={navigate} />);
 
-    expect(await screen.findByText("暂无活动 BOM")).toBeInTheDocument();
+    expect(await screen.findByText("暂无进行中的焊接项目")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "选择 BOM" }));
-    expect(await screen.findByRole("dialog", { name: "选择 BOM" })).toHaveTextContent("暂无已导入 BOM");
-    fireEvent.click(screen.getByRole("button", { name: "去 BOM 分析" }));
-    expect(navigate).toHaveBeenCalledWith("/bom");
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    expect(await screen.findByRole("dialog", { name: "选择项目" })).toHaveTextContent("暂无项目");
+    fireEvent.click(screen.getByRole("button", { name: "去项目页" }));
+    expect(navigate).toHaveBeenCalledWith("/projects");
   });
 
-  it("activates a picked BOM straight from the chooser", async () => {
+  it("opens a picked project straight from the chooser", async () => {
     const api = makeApi({
-      restoreActiveInteractiveBom: vi.fn().mockResolvedValue(null),
-      listBomFiles: vi.fn().mockResolvedValue([
-        { id: "bom-1", display_name: "主板", original_name: "board.csv", created_at: "2026-09-14T00:00:00Z", active: false },
+      restoreActiveWeldingSession: vi.fn().mockResolvedValue(null),
+      listProjects: vi.fn().mockResolvedValue([
+        { id: "p-2", name: "板 B", original_name: "board.csv", created_at: "2026-09-14T00:00:00Z", active: false },
       ]),
-      activateImportedBom: vi.fn().mockResolvedValue(tabularSession),
+      openProjectWelding: vi.fn().mockResolvedValue(tabularSession),
     });
     render(<WeldingPage api={api} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "选择 BOM" }));
-    const dialog = await screen.findByRole("dialog", { name: "选择 BOM" });
+    fireEvent.click(await screen.findByRole("button", { name: "选择项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "选择项目" });
     expect(within(dialog).getByText("board.csv")).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: /主板/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /板 B/ }));
 
-    await waitFor(() => expect(api.activateImportedBom).toHaveBeenCalledWith({ id: "bom-1" }));
+    await waitFor(() => expect(api.openProjectWelding).toHaveBeenCalledWith("p-2"));
     expect(await screen.findByText("表格 BOM 没有交互式画布")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "选择 BOM" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "选择项目" })).not.toBeInTheDocument();
   });
 
-  it("keeps the chooser open with the reason when activation fails", async () => {
+  it("keeps the chooser open with the reason when opening fails", async () => {
     const api = makeApi({
-      restoreActiveInteractiveBom: vi.fn().mockResolvedValue(null),
-      listBomFiles: vi.fn().mockResolvedValue([
-        { id: "bom-2", display_name: "旧板", original_name: "board.html", created_at: "2026-09-14T00:00:00Z", active: false },
+      restoreActiveWeldingSession: vi.fn().mockResolvedValue(null),
+      listProjects: vi.fn().mockResolvedValue([
+        { id: "p-3", name: "旧板", original_name: "board.html", created_at: "2026-09-14T00:00:00Z", active: false },
       ]),
-      activateImportedBom: vi.fn().mockRejectedValue(new Error("活动 BOM 的缓存文件已丢失，请在「BOM 分析」页重新选择该 BOM 文件")),
+      openProjectWelding: vi.fn().mockRejectedValue(new Error("该项目的画布缓存已丢失，请在「项目」页重新导入原始 BOM 文件")),
     });
     render(<WeldingPage api={api} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "选择 BOM" }));
-    const dialog = await screen.findByRole("dialog", { name: "选择 BOM" });
+    fireEvent.click(await screen.findByRole("button", { name: "选择项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "选择项目" });
     fireEvent.click(within(dialog).getByRole("button", { name: /旧板/ }));
 
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("缓存文件已丢失");
-    expect(screen.getByText("暂无活动 BOM")).toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "选择 BOM" })).toBeInTheDocument();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("缓存已丢失");
+    expect(screen.getByText("暂无进行中的焊接项目")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "选择项目" })).toBeInTheDocument();
   });
 
   it("leaves the welding session without returning taken stock", async () => {
@@ -140,7 +140,7 @@ describe("WeldingPage", () => {
     expect(confirmDialog).toHaveBeenCalledTimes(1);
     expect(vi.mocked(confirmDialog).mock.calls[0][0]).toContain("不会退回库存");
     expect(api.confirmTake).not.toHaveBeenCalled();
-    expect(await screen.findByText("暂无活动 BOM")).toBeInTheDocument();
+    expect(await screen.findByText("暂无进行中的焊接项目")).toBeInTheDocument();
     expect(screen.queryByTitle("交互式 BOM")).not.toBeInTheDocument();
   });
 
@@ -166,21 +166,21 @@ describe("WeldingPage", () => {
     expect(screen.getByTestId("welding-layout")).toHaveAttribute("data-split", "65-35");
   });
 
-  it("shows the active BOM context and side progress summary", async () => {
+  it("shows the project context and side progress summary", async () => {
     const api = makeApi({
       getWeldingProgress: vi.fn().mockResolvedValue([{ session_id: "session-1", component_key: "C1", side: "top", part_id: "part-1", required_quantity: 2, consumed_quantity: 1, taken_quantity: 1, status: "partial" }]),
     });
     render(<WeldingPage api={api} />);
     await screen.findByTitle("交互式 BOM");
-    expect(screen.getByRole("heading", { name: "焊接工作台" })).toBeVisible();
-    expect(screen.getByText("board")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "主板" })).toBeVisible();
+    expect(screen.getByText("board.html")).toBeVisible();
     selectInBom(["R1", "R2"]);
     expect(await screen.findByText("顶层 · 部分取用")).toBeVisible();
   });
 
   it("shows the full BOM in a collapsible tray and highlights the active group", async () => {
     const extraGroup = { ...session.normalized.groups[0], component_key: "C2", name: "1k", value: "1k", designators: ["R4"], placements: [{ designator: "R4", side: "top", component_key: "C2" }] };
-    const api = makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue({ ...session, normalized: { ...session.normalized, groups: [...session.normalized.groups, extraGroup] } }) });
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue({ ...session, normalized: { ...session.normalized, groups: [...session.normalized.groups, extraGroup] } }) });
     render(<WeldingPage api={api} />);
     await screen.findByTitle("交互式 BOM");
     expect(screen.getByRole("region", { name: "器件列表" })).toBeInTheDocument();
@@ -203,7 +203,7 @@ describe("WeldingPage", () => {
         ] }],
       },
     };
-    const api = makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue(topOnlySession) });
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue(topOnlySession) });
     render(<WeldingPage api={api} />);
     await screen.findByTitle("交互式 BOM");
     selectInBom(["R1", "R2"]);
@@ -421,7 +421,7 @@ describe("WeldingPage", () => {
     };
     const resolveBomSelection = vi.fn().mockResolvedValue({ session_id: "session-1", component_key: "BOT", side: "bottom", designators: ["C1"] });
     const confirmTake = vi.fn();
-    render(<WeldingPage api={makeApi({ restoreActiveInteractiveBom: vi.fn().mockResolvedValue(mixed), resolveBomSelection, confirmTake })} />);
+    render(<WeldingPage api={makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue(mixed), resolveBomSelection, confirmTake })} />);
 
     const topRow = await screen.findByTestId("tray-row-TOP");
     const bottomRow = screen.getByTestId("tray-row-BOT");
@@ -483,7 +483,7 @@ describe("WeldingPage", () => {
 
   it("does not silently use a same-named part when an authoritative LCSC is unmatched", async () => {
     const api = makeApi({
-      restoreActiveInteractiveBom: vi.fn().mockResolvedValue({
+      restoreActiveWeldingSession: vi.fn().mockResolvedValue({
         ...session,
         normalized: {
           ...session.normalized,
@@ -535,7 +535,7 @@ describe("WeldingPage", () => {
 
   it("drives a tabular BOM from the tray because it has no interactive canvas", async () => {
     const api = makeApi({
-      restoreActiveInteractiveBom: vi.fn().mockResolvedValue(tabularSession),
+      restoreActiveWeldingSession: vi.fn().mockResolvedValue(tabularSession),
       resolveBomSelection: vi.fn().mockResolvedValue({ session_id: "session-2", component_key: "C1", side: null, designators: ["R1", "R2"] }),
     });
     render(<WeldingPage api={api} />);

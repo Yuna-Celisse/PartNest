@@ -1,4 +1,4 @@
-import type { BomAnalysisRow } from "./useBomImport";
+import type { BomAnalysisRow } from "./useProjectImport";
 import { DataTable, type DataColumn } from "../../components/ui/DataTable";
 import { StatusBadge, type StatusTone } from "../../components/ui/StatusBadge";
 

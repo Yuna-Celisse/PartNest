@@ -1,4 +1,4 @@
-import type { FieldMapping, FieldName } from "./useBomImport";
+import type { FieldMapping, FieldName } from "./useProjectImport";
 import { Dialog } from "../../components/ui/Overlay";
 import { FormField } from "../../components/ui/FormField";
 

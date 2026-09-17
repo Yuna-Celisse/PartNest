@@ -1,7 +1,7 @@
-pub mod bom;
 pub mod boxes;
 pub mod movements;
 pub mod parts;
+pub mod projects;
 pub mod settings;
 pub mod welding;
 

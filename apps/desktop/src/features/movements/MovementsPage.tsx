@@ -48,7 +48,7 @@ export function MovementsPage({ api = desktopApi }: { api?: MovementsApi }) {
     if (movementType !== "all" && movement.movement_type !== movementType) return false;
     const needle = search.trim().toLocaleLowerCase();
     if (!needle) return true;
-    return [movement.component, movement.part_name, movement.component_key, movement.reason, movement.bom_display_name]
+    return [movement.component, movement.part_name, movement.component_key, movement.reason, movement.project_name]
       .filter(Boolean)
       .some((value) => value!.toLocaleLowerCase().includes(needle));
   }), [movements, movementType, search]);
@@ -74,7 +74,7 @@ export function MovementsPage({ api = desktopApi }: { api?: MovementsApi }) {
     { id: "before", header: "变化前", width: 80, cell: (movement) => quantity(movement.before_quantity) },
     { id: "after", header: "变化后", width: 80, cell: (movement) => quantity(movement.after_quantity) },
     { id: "reason", header: "原因", width: 150, cell: (movement) => movement.reason },
-    { id: "bom", header: "BOM备注名", width: 140, cell: (movement) => movement.bom_display_name ?? "—" },
+    { id: "project", header: "项目", width: 140, cell: (movement) => movement.project_name ?? "—" },
     { id: "actions", header: "操作", width: 100, cell: (movement) => movement.reversible && <button className="pn-button pn-button--secondary" type="button" disabled={busyId === movement.id} onClick={() => void reverse(movement)}>撤销取用</button> },
   ], [busyId]);
 

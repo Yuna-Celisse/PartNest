@@ -31,13 +31,13 @@ fn seed_database(path: &std::path::Path) -> Database {
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('bom-1', 'board.html', 'Board note', 'hash', 'hash.html')",
+            "INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES ('project-1', 'Board note', 'board.html', 'hash', 'hash.html')",
             [],
         )
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-1', 'bom-1', 'active')",
+            "INSERT INTO welding_sessions (id, project_id, status) VALUES ('session-1', 'project-1', 'active')",
             [],
         )
         .unwrap();

@@ -43,13 +43,13 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('bom-1', 'board.html', 'Board note', 'hash', 'hash.html')",
+            "INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES ('project-1', 'Board note', 'board.html', 'hash', 'hash.html')",
             [],
         )
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-1', 'bom-1', 'active')",
+            "INSERT INTO welding_sessions (id, project_id, status) VALUES ('session-1', 'project-1', 'active')",
             [],
         )
         .unwrap();
@@ -74,7 +74,7 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
     assert_eq!(movements[0].delta, -2);
     assert_eq!(movements[0].quantity, -2);
     assert_eq!(movements[0].reason, "welding take");
-    assert_eq!(movements[0].bom_display_name.as_deref(), Some("Board note"));
+    assert_eq!(movements[0].project_name.as_deref(), Some("Board note"));
     assert_eq!(movements[0].session_id.as_deref(), Some("session-1"));
     assert_eq!(movements[0].side.as_deref(), Some("top"));
     assert_eq!(movements[0].created_at, "2026-01-02T00:00:00.000Z");
@@ -88,7 +88,7 @@ fn movements_are_newest_first_with_stock_before_after_and_reversal_visibility() 
 
     db.connection()
         .execute(
-            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('session-2', 'bom-1', 'completed')",
+            "INSERT INTO welding_sessions (id, project_id, status) VALUES ('session-2', 'project-1', 'completed')",
             [],
         )
         .unwrap();
@@ -179,8 +179,8 @@ fn archived_parts_keep_legacy_and_modern_movement_history_but_cannot_be_reversed
             [&part.id],
         )
         .unwrap();
-    db.connection().execute_batch("INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('b', 'b.html', 'Board', 'h', 'h.html');
-        INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('s', 'b', 'active');").unwrap();
+    db.connection().execute_batch("INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES ('p', 'Board', 'b.html', 'h', 'h.html');
+        INSERT INTO welding_sessions (id, project_id, status) VALUES ('s', 'p', 'active');").unwrap();
     db.connection().execute("INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('p', 's', 'C123', 'top', ?1, 3, 2)", [&part.id]).unwrap();
     db.connection().execute("INSERT INTO inventory_movements (id, part_id, movement_type, quantity, reason, created_at) VALUES ('old', ?1, 'in', 5, 'legacy stock', '2026-01-01')", [&part.id]).unwrap();
     db.connection().execute("INSERT INTO inventory_movements (id, part_id, session_id, component_key, side, movement_type, quantity, reason, created_at) VALUES ('take', ?1, 's', 'C123', 'top', 'consume', -2, 'take', '2026-01-02')", [&part.id]).unwrap();

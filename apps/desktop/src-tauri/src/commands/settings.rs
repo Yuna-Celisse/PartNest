@@ -17,7 +17,7 @@ pub fn reset_data_service(
          DELETE FROM inventory_movements;
          DELETE FROM welding_progress;
          DELETE FROM welding_sessions;
-         DELETE FROM bom_files;
+         DELETE FROM projects;
          DELETE FROM parts;
          DELETE FROM boxes;
          DELETE FROM lcsc_cache;",

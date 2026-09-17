@@ -27,6 +27,10 @@ const SOFT_DELETE_PARTS_MIGRATION: &str =
 const BOM_IMPORT_SNAPSHOT_MIGRATION: &str =
     include_str!("../../migrations/0010_bom_import_snapshot.sql");
 
+const PROJECTS_MIGRATION: &str = include_str!("../../migrations/0011_projects.sql");
+
+const PROJECT_SOURCES_MIGRATION: &str = include_str!("../../migrations/0012_project_sources.sql");
+
 /// The complete, ordered migration set used by every database open. Keeping it
 /// in one place lets tests compare it against the migration files on disk.
 pub fn migrations() -> Vec<Migration<'static>> {
@@ -70,6 +74,14 @@ pub fn migrations() -> Vec<Migration<'static>> {
         Migration {
             version: 10,
             sql: BOM_IMPORT_SNAPSHOT_MIGRATION,
+        },
+        Migration {
+            version: 11,
+            sql: PROJECTS_MIGRATION,
+        },
+        Migration {
+            version: 12,
+            sql: PROJECT_SOURCES_MIGRATION,
         },
     ]
 }

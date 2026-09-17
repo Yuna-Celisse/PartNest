@@ -46,13 +46,13 @@ fn fixture() -> (Database, String, String) {
     let session_id = new_id();
     db.connection()
         .execute(
-            "INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES (?1, 'bom.html', 'BOM', 'hash', 'hash.html')",
+            "INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES (?1, 'BOM', 'bom.html', 'hash', 'hash.html')",
             [&bom_id],
         )
         .unwrap();
     db.connection()
         .execute(
-            "INSERT INTO welding_sessions (id, bom_file_id, status) VALUES (?1, ?2, 'active')",
+            "INSERT INTO welding_sessions (id, project_id, status) VALUES (?1, ?2, 'active')",
             rusqlite::params![session_id, bom_id],
         )
         .unwrap();
@@ -345,8 +345,11 @@ fn authorized_command_accepts_designator_subsets_and_uses_authoritative_quantity
     let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../fixtures/bom/interactive-minimal.html");
+    let imported = runtime
+        .import_project(&db, &source, None, None, None)
+        .unwrap();
     let session = runtime
-        .cache_interactive_bom(&db, source, "Fixture")
+        .open_project_welding(&db, &imported.project_id)
         .unwrap();
     let box_record = create_box_service(
         &db,

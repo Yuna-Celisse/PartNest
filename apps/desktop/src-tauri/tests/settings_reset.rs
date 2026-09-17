@@ -6,8 +6,8 @@ fn seed(db: &Database) {
     db.connection().execute_batch(
         "INSERT INTO boxes (id, name, rows, cols) VALUES (1, 'Bench', 2, 2);
          INSERT INTO parts (id, name, quantity, box_id, slot) VALUES ('p', 'Resistor', 2, 1, 'A0');
-         INSERT INTO bom_files (id, original_name, display_name, sha256, cache_name) VALUES ('b', 'b.html', 'Board', 'hash', 'hash.html');
-         INSERT INTO welding_sessions (id, bom_file_id, status) VALUES ('s', 'b', 'active');
+         INSERT INTO projects (id, name, original_name, sha256, cache_name) VALUES ('p', 'Board', 'b.html', 'hash', 'hash.html');
+         INSERT INTO welding_sessions (id, project_id, status) VALUES ('s', 'p', 'active');
          INSERT INTO welding_progress (id, session_id, component_key, side, part_id, required_quantity, taken_quantity) VALUES ('w', 's', 'R', 'top', 'p', 1, 0);
          INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason) VALUES ('take', 'p', 's', 'consume', -1, 'take');
          INSERT INTO inventory_movements (id, part_id, session_id, movement_type, quantity, reason, reverses_movement_id) VALUES ('undo', 'p', 's', 'reverse', 1, 'undo', 'take');"
@@ -25,7 +25,7 @@ fn reset_clears_business_data_and_preserves_restorable_backup() {
         "parts",
         "boxes",
         "inventory_movements",
-        "bom_files",
+        "projects",
         "welding_sessions",
         "welding_progress",
         "lcsc_cache",

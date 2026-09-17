@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
-import { cachedBomUrl, desktopApi, errorMessage, normalizePart, type BomFileSummary, type BomSide, type CachedBomSession, type ConfirmTakeInput, type DesktopApi, type Part, type ResolvedBomSelection, type WeldingProgress } from "../../app/tauri";
+import { cachedBomUrl, desktopApi, errorMessage, normalizePart, type BomSide, type CachedBomSession, type ConfirmTakeInput, type DesktopApi, type Part, type ProjectSummary, type ResolvedBomSelection, type WeldingProgress } from "../../app/tauri";
 import { matchBomGroup, type InventoryPart } from "@partnest/domain";
-import { BomChooser } from "./BomChooser";
+import { ProjectChooser } from "./ProjectChooser";
 import { BomFrame } from "./BomFrame";
 import { ComponentTray } from "./ComponentTray";
 import { TakePanel } from "./TakePanel";
@@ -10,8 +10,8 @@ import { useBomBridge } from "./useBomBridge";
 import { useResizableColumns } from "./useResizableColumns";
 import { StatusBadge } from "../../components/ui/StatusBadge";
 
-export type WeldingApi = Pick<DesktopApi, "restoreActiveInteractiveBom" | "resolveBomSelection" | "listParts" | "confirmTake" | "getWeldingProgress">
-  & Partial<Pick<DesktopApi, "listBomFiles" | "activateImportedBom" | "endWeldingSession">>;
+export type WeldingApi = Pick<DesktopApi, "restoreActiveWeldingSession" | "resolveBomSelection" | "listParts" | "confirmTake" | "getWeldingProgress">
+  & Partial<Pick<DesktopApi, "listProjects" | "openProjectWelding" | "endWeldingSession">>;
 
 /** 板面页签的顺序，同时是键盘导航的环形顺序。 */
 const sideOrder: (BomSide | "all")[] = ["top", "bottom", "all"];
@@ -30,7 +30,7 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   const [notice, setNotice] = useState("");
   const [trayCollapsed, setTrayCollapsed] = useState(false);
   const [chooserOpen, setChooserOpen] = useState(false);
-  const [chooserFiles, setChooserFiles] = useState<BomFileSummary[]>([]);
+  const [chooserProjects, setChooserProjects] = useState<ProjectSummary[]>([]);
   const [chooserError, setChooserError] = useState("");
   const [activating, setActivating] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -41,7 +41,7 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
     let active = true;
     setLoading(true);
     setError("");
-    void Promise.all([api.restoreActiveInteractiveBom(), api.listParts()]).then(([restored, listed]) => {
+    void Promise.all([api.restoreActiveWeldingSession(), api.listParts()]).then(([restored, listed]) => {
       if (!active) return;
       setSession(restored);
       setParts(listed.map((part) => normalizePart(part)));
@@ -213,35 +213,35 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   }
 
   async function openChooser() {
-    setChooserError(""); setChooserFiles([]); setChooserOpen(true);
-    if (!api.listBomFiles) return;
-    try { setChooserFiles(await api.listBomFiles()); }
+    setChooserError(""); setChooserProjects([]); setChooserOpen(true);
+    if (!api.listProjects) return;
+    try { setChooserProjects(await api.listProjects()); }
     catch (cause) { setChooserError(errorMessage(cause)); }
   }
 
-  async function pickBom(file: BomFileSummary) {
-    if (!api.activateImportedBom) return;
+  async function pickProject(project: ProjectSummary) {
+    if (!api.openProjectWelding) return;
     setActivating(true); setChooserError("");
-    let activated: CachedBomSession;
+    let opened: CachedBomSession;
     try {
-      activated = await api.activateImportedBom({ id: file.id });
+      opened = await api.openProjectWelding(project.id);
     } catch (cause) {
       setActivating(false); setChooserError(errorMessage(cause)); return;
     }
     setActivating(false); setChooserOpen(false);
-    setSession(activated); setSelection(null); setSelectedPartId(null); setError(""); setNotice("");
-    try { setProgress(await api.getWeldingProgress(activated.session_id)); }
+    setSession(opened); setSelection(null); setSelectedPartId(null); setError(""); setNotice("");
+    try { setProgress(await api.getWeldingProgress(opened.session_id)); }
     catch (cause) { setError(errorMessage(cause)); }
   }
 
   async function exitSession() {
     if (!session || !api.endWeldingSession) return;
     setError(""); setNotice("");
-    const name = session.display_name || session.original_name;
+    const name = session.project_name || session.original_name;
     try {
       // Destructive actions use the async dialog plugin, not window.confirm.
       const accepted = await confirmDialog(
-        `退出「${name}」的当前焊接？已取用的器件不会退回库存；如需纠正请在「库存流水」撤销对应取用。重新选择该 BOM 会开始新的会话。`,
+        `退出项目「${name}」的当前焊接？已取用的器件不会退回库存；如需纠正请在「库存流水」撤销对应取用。重新打开该项目的焊接会开始新的会话。`,
         { title: "退出当前焊接", kind: "warning", okLabel: "退出", cancelLabel: "取消" },
       );
       if (!accepted) return;
@@ -252,32 +252,32 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   }
 
   const noSession = error ? <>
-    <strong>活动 BOM 加载失败</strong>
+    <strong>项目焊接会话加载失败</strong>
     <p role="alert">{error}</p>
     <div className="welding-empty-state__actions">
       <button className="pn-button pn-button--primary" type="button" onClick={() => setRetryNonce((value) => value + 1)}>重试</button>
-      <button className="pn-button pn-button--secondary" type="button" onClick={() => void openChooser()}>选择 BOM</button>
-      {navigate && <button className="pn-button pn-button--secondary" type="button" onClick={() => navigate("/bom")}>去 BOM 分析重新选择</button>}
+      <button className="pn-button pn-button--secondary" type="button" onClick={() => void openChooser()}>选择项目</button>
+      {navigate && <button className="pn-button pn-button--secondary" type="button" onClick={() => navigate("/projects")}>去项目页重新导入</button>}
     </div>
   </> : <>
-    <strong>暂无活动 BOM</strong>
-    <p className="welding-empty-state__hint">从已导入的 BOM 中选一个作为活动 BOM；需要新的 BOM 时先到「BOM 分析」页导入。</p>
+    <strong>暂无进行中的焊接项目</strong>
+    <p className="welding-empty-state__hint">从已导入的项目里选一个开始焊接；需要新的项目时先到「项目」页导入 BOM。</p>
     <div className="welding-empty-state__actions">
-      <button className="pn-button pn-button--primary" type="button" onClick={() => void openChooser()}>选择 BOM</button>
-      {navigate && <button className="pn-button pn-button--secondary" type="button" onClick={() => navigate("/bom")}>去 BOM 分析</button>}
+      <button className="pn-button pn-button--primary" type="button" onClick={() => void openChooser()}>选择项目</button>
+      {navigate && <button className="pn-button pn-button--secondary" type="button" onClick={() => navigate("/projects")}>去项目页</button>}
     </div>
   </>;
 
   return <section aria-label="焊接工作台">
-    {loading ? <div className="welding-empty-state" role="status"><strong>正在加载活动 BOM</strong></div> : !session ? <div className="welding-empty-state">{noSession}</div> : <div className="welding-workspace" data-testid="welding-layout" data-split="65-35">
+    {loading ? <div className="welding-empty-state" role="status"><strong>正在加载焊接项目</strong></div> : !session ? <div className="welding-empty-state">{noSession}</div> : <div className="welding-workspace" data-testid="welding-layout" data-split="65-35">
       <header className="welding-workspace__header">
         <div>
           <p className="welding-workspace__eyebrow">焊接工作台</p>
-          <h1>焊接工作台</h1>
-          <p className="welding-workspace__file" title={session.original_name}>{session.display_name || session.original_name}</p>
+          <h1>{session.project_name || session.original_name}</h1>
+          <p className="welding-workspace__file" title={session.original_name}>{session.original_name}</p>
         </div>
         <div className="welding-workspace__meta" aria-label="BOM概览"><span>{session.normalized.groups.length} 个器件组</span><span>{session.normalized.groups.reduce((total, group) => total + group.designators.length, 0)} 个位号</span></div>
-        <div className="welding-workspace__actions"><button className="pn-button pn-button--secondary" type="button" onClick={() => void exitSession()}>退出当前焊接</button></div>
+        <div className="welding-workspace__actions"><button className="pn-button pn-button--secondary" type="button" onClick={() => void openChooser()}>切换项目</button><button className="pn-button pn-button--secondary" type="button" onClick={() => void exitSession()}>退出当前焊接</button></div>
       </header>
       <div className="welding-bom bom-canvas-light" data-bom-canvas>{canvasSrc ? <BomFrame src={canvasSrc} frameRef={frameRef} onLoad={postHighlight} /> : <div className="welding-canvas-note" role="status"><strong>表格 BOM 没有交互式画布</strong><span>请在下方「器件列表」点击器件行选择位号，再在右侧确认取用。</span></div>}{canvasSrc ? <div className="welding-canvas-controls"><button className="pn-button pn-button--secondary" type="button" disabled={selectedDesignators.length === 0} onClick={() => postView("fit")}>缩放居中</button><button className="pn-button pn-button--ghost" type="button" onClick={() => postView("reset")}>复位视图</button></div> : null}</div>
       <div className="welding-right" id="welding-side-panel" role="tabpanel" aria-labelledby={`welding-side-tab-${side}`} tabIndex={0}>
@@ -302,6 +302,6 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
       </div>
       <ComponentTray groups={session.normalized.groups} side={side} activeComponentKey={selection?.component_key ?? null} widths={columns.widths} onResizeStart={columns.startResize} onResizeKey={columns.adjustWidth} onSelectDesignators={onSelectDesignators} collapsed={trayCollapsed} onToggle={() => setTrayCollapsed((value) => !value)} />
     </div>}
-    <BomChooser open={chooserOpen} files={chooserFiles} busy={activating} error={chooserError} onRequestClose={() => setChooserOpen(false)} onPick={(file) => void pickBom(file)} />
+    <ProjectChooser open={chooserOpen} projects={chooserProjects} busy={activating} error={chooserError} onRequestClose={() => setChooserOpen(false)} onPick={(project) => void pickProject(project)} />
   </section>;
 }

@@ -106,16 +106,7 @@ pub fn inspect_tabular_bom(
     mapping: Option<&FieldMapping>,
 ) -> Result<ImportPreview, TabularError> {
     let path = path.as_ref();
-    let table = if path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("xlsx"))
-        .unwrap_or(false)
-    {
-        read_xlsx(path)?
-    } else {
-        read_csv(path)?
-    };
+    let table = read_table(path)?;
     let (resolved, ambiguous) = resolve_mapping(&table.headers, mapping);
     if ambiguous || !has_required_mapping(&resolved) {
         return Ok(ImportPreview::NeedsMapping {
@@ -143,16 +134,7 @@ pub fn parse_tabular_bom(
     mapping: Option<&FieldMapping>,
 ) -> Result<NormalizedBomDto, TabularError> {
     let path = path.as_ref();
-    let table = if path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("xlsx"))
-        .unwrap_or(false)
-    {
-        read_xlsx(path)?
-    } else {
-        read_csv(path)?
-    };
+    let table = read_table(path)?;
     let (resolved, ambiguous) = resolve_mapping(&table.headers, mapping);
     if ambiguous || !has_required_mapping(&resolved) {
         return Err(TabularError::InvalidRecord {
@@ -166,6 +148,20 @@ pub fn parse_tabular_bom(
         .unwrap_or_default()
         .to_owned();
     normalize_table(source_name, table, &resolved)
+}
+
+/// Pick the reader from the file name: spreadsheets go to calamine, which
+/// detects xls versus xlsx by content once it is handed the file.
+fn read_table(path: &Path) -> Result<Table, TabularError> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("xls") | Some("xlsx") => read_xlsx(path),
+        _ => read_csv(path),
+    }
 }
 
 fn read_csv(path: &Path) -> Result<Table, TabularError> {

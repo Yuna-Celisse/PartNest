@@ -1,7 +1,6 @@
 use partnest_desktop_lib::bom::cache::InteractiveBomRuntime;
-use partnest_desktop_lib::bom::history::{record_import, BomImportKind};
-use partnest_desktop_lib::bom::tabular::inspect_tabular_bom;
-use partnest_desktop_lib::bom::types::{BomSide, ImportPreview, NormalizedBomDto};
+use partnest_desktop_lib::bom::projects::ProjectKind;
+use partnest_desktop_lib::bom::types::BomSide;
 use partnest_desktop_lib::commands::boxes::{create_box_service, BoxInput};
 use partnest_desktop_lib::commands::parts::{create_part_service, PartInput};
 use partnest_desktop_lib::commands::welding::{confirm_take_authorized_service, ConfirmTakeInput};
@@ -17,19 +16,25 @@ fn write_csv(dir: &Path, name: &str, contents: &str) -> PathBuf {
     path
 }
 
-fn normalized(preview: ImportPreview) -> NormalizedBomDto {
-    match preview {
-        ImportPreview::Ready(bom) => bom,
-        ImportPreview::NeedsMapping { headers, .. } => {
-            panic!("fixture unexpectedly needs mapping: {headers:?}")
-        }
-    }
-}
-
 fn cache_entries(dir: &Path) -> usize {
     fs::read_dir(dir)
         .map(|entries| entries.count())
         .unwrap_or(0)
+}
+
+/// Import a table as a project and open the welding workspace for it.
+fn open_table_project(
+    runtime: &InteractiveBomRuntime,
+    db: &Database,
+    source: &Path,
+) -> partnest_desktop_lib::bom::cache::CachedBomSession {
+    let imported = runtime
+        .import_project(db, source, None, None, None)
+        .unwrap();
+    assert_eq!(imported.kind, ProjectKind::Tabular);
+    runtime
+        .open_project_welding(db, &imported.project_id)
+        .unwrap()
 }
 
 /// A stocked part has to live in a box slot, so both take tests need one.
@@ -62,7 +67,7 @@ fn stocked_part(db: &Database) -> partnest_desktop_lib::commands::parts::PartVie
 }
 
 #[test]
-fn a_side_less_tabular_bom_drives_the_welding_workspace_from_its_snapshot() {
+fn a_side_less_tabular_project_drives_the_welding_workspace_from_its_snapshot() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache_dir = root.path().join("cache");
@@ -73,37 +78,34 @@ fn a_side_less_tabular_bom_drives_the_welding_workspace_from_its_snapshot() {
         "board.csv",
         "Designator,Footprint,Value,Manufacturer Part\n\"R1,R2\",0603,10k,R-10K\n",
     );
-    let import = normalized(inspect_tabular_bom(&source, None).unwrap());
-    record_import(&db, &source, None, BomImportKind::Tabular, &import).unwrap();
-
-    let session = runtime
-        .activate_imported_bom(&db, None, Some(&source), None)
-        .unwrap();
-    assert_eq!(session.kind, BomImportKind::Tabular);
+    let session = open_table_project(&runtime, &db, &source);
     assert!(session.cache_path.is_none(), "no canvas is cached");
     assert_eq!(cache_entries(&cache_dir), 0, "no cache copy is written");
+    let project_id = session.project_id.clone();
 
     // A restart reopens the session straight from the stored snapshot.
     let restarted = InteractiveBomRuntime::new(&cache_dir);
     let restored = restarted
         .restore_active_session(&db)
         .unwrap()
-        .expect("the activated session survives a restart");
+        .expect("the opened session survives a restart");
     assert_eq!(restored.session_id, session.session_id);
-    assert_eq!(restored.kind, BomImportKind::Tabular);
-    assert_eq!(restored.normalized.groups, import.groups);
+    assert_eq!(restored.project_id, project_id);
+    assert_eq!(restored.kind, ProjectKind::Tabular);
+    assert_eq!(restored.normalized.groups.len(), 1);
 
     // Tray selections carry no side; the operator's side tab decides.
     let resolved = restarted
         .resolve_bom_selection(&db, &restored.token, &["R1".into(), "R2".into()])
         .unwrap();
     assert_eq!(resolved.side, None);
-    assert_eq!(resolved.component_key, import.groups[0].component_key);
+    let component_key = restored.normalized.groups[0].component_key.clone();
+    assert_eq!(resolved.component_key, component_key);
 
     let part = stocked_part(&db);
     let input = ConfirmTakeInput {
         session_id: restored.session_id.clone(),
-        component_key: import.groups[0].component_key.clone(),
+        component_key,
         side: BomSide::Top,
         designators: vec!["R1".into()],
         bom_quantity: 1,
@@ -125,7 +127,7 @@ fn a_side_less_tabular_bom_drives_the_welding_workspace_from_its_snapshot() {
 }
 
 #[test]
-fn a_tabular_bom_with_a_side_column_keeps_enforcing_its_recorded_side() {
+fn a_tabular_project_with_a_side_column_keeps_enforcing_its_recorded_side() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
@@ -134,11 +136,7 @@ fn a_tabular_bom_with_a_side_column_keeps_enforcing_its_recorded_side() {
         "sided.csv",
         "Designator,Footprint,Value,Manufacturer Part,Side\nR1,0603,10k,R-10K,top\n",
     );
-    let import = normalized(inspect_tabular_bom(&source, None).unwrap());
-    record_import(&db, &source, None, BomImportKind::Tabular, &import).unwrap();
-    let session = runtime
-        .activate_imported_bom(&db, None, Some(&source), None)
-        .unwrap();
+    let session = open_table_project(&runtime, &db, &source);
 
     let resolved = runtime
         .resolve_bom_selection(&db, &session.token, &["R1".into()])
@@ -151,7 +149,7 @@ fn a_tabular_bom_with_a_side_column_keeps_enforcing_its_recorded_side() {
         &runtime,
         ConfirmTakeInput {
             session_id: session.session_id.clone(),
-            component_key: import.groups[0].component_key.clone(),
+            component_key: session.normalized.groups[0].component_key.clone(),
             side: BomSide::Bottom,
             designators: vec!["R1".into()],
             bom_quantity: 1,
@@ -165,7 +163,7 @@ fn a_tabular_bom_with_a_side_column_keeps_enforcing_its_recorded_side() {
 }
 
 #[test]
-fn activating_a_tabular_record_by_id_needs_no_source_file() {
+fn opening_a_table_project_needs_no_source_file() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
@@ -174,19 +172,17 @@ fn activating_a_tabular_record_by_id_needs_no_source_file() {
         "board.csv",
         "Designator,Footprint,Value\nR1,0603,10k\n",
     );
-    let import = normalized(inspect_tabular_bom(&source, None).unwrap());
-    record_import(&db, &source, None, BomImportKind::Tabular, &import).unwrap();
-    let bom_file_id: String = db
-        .connection()
-        .query_row("SELECT id FROM bom_files", [], |row| row.get(0))
+    let imported = runtime
+        .import_project(&db, &source, Some("主板"), None, None)
         .unwrap();
     fs::remove_file(&source).unwrap();
 
     let session = runtime
-        .activate_imported_bom(&db, Some(&bom_file_id), None, None)
+        .open_project_welding(&db, &imported.project_id)
         .unwrap();
-    assert_eq!(session.kind, BomImportKind::Tabular);
-    assert_eq!(session.normalized.groups, import.groups);
+    assert_eq!(session.kind, ProjectKind::Tabular);
+    assert_eq!(session.project_name, "主板");
+    assert_eq!(session.normalized.groups, imported.normalized.groups);
     assert!(runtime
         .restore_active_session(&db)
         .unwrap()
@@ -194,18 +190,38 @@ fn activating_a_tabular_record_by_id_needs_no_source_file() {
 }
 
 #[test]
-fn activating_an_unknown_import_reports_a_readable_error() {
+fn opening_an_unknown_project_reports_a_readable_error() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
     let missing = runtime
-        .activate_imported_bom(&db, Some(&new_id()), None, None)
+        .open_project_welding(&db, &new_id())
         .expect_err("an unknown id must fail");
-    assert!(missing.to_string().contains("not available"));
+    assert!(missing.to_string().contains("is not available"));
+    assert!(missing.user_message().contains("找不到该项目"));
+    assert_eq!(cache_entries(&root.path().join("cache")), 0);
+}
 
-    let unregistered = write_csv(root.path(), "loose.csv", "Designator\nR1\n");
+#[test]
+fn a_table_that_still_needs_mapping_is_not_imported() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let runtime = InteractiveBomRuntime::new(root.path().join("cache"));
+    let source = write_csv(
+        root.path(),
+        "odd.csv",
+        "Designator stuff,Pin count\nR1 R2,2\n",
+    );
+
     let error = runtime
-        .activate_imported_bom(&db, None, Some(&unregistered), None)
-        .expect_err("a file that was never analysed must fail");
-    assert!(error.user_message().contains("找不到该 BOM 记录"));
+        .import_project(&db, &source, None, None, None)
+        .expect_err("an unmappable table must stop before any write");
+    assert!(error.user_message().contains("字段映射"));
+    assert_eq!(
+        db.connection()
+            .query_row("SELECT COUNT(*) FROM projects", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }

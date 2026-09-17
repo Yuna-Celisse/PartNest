@@ -61,7 +61,7 @@ impl BridgeError {
     pub fn user_message(&self) -> String {
         match self {
             Self::InvalidToken => "BOM 会话令牌无效，请重新在 BOM 中选择器件".into(),
-            Self::InactiveSession => "BOM 会话已失效，请在「BOM 分析」页重新设为活动 BOM".into(),
+            Self::InactiveSession => "焊接会话已失效，请在「项目」页重新打开该项目的焊接".into(),
             Self::InvalidMessage(reason) => format!("BOM 选择消息无效：{reason}"),
             Self::DuplicateDesignator => "选中的位号有重复".into(),
             Self::UnknownDesignator => "BOM 返回了不属于当前 BOM 的位号".into(),

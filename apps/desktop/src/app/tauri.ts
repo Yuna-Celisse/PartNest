@@ -58,7 +58,7 @@ export function cachedBomUrl(cachePath: string): string {
 }
 
 export type BomSide = "top" | "bottom";
-export type BomImportKind = "interactive" | "tabular";
+export type ProjectKind = "interactive" | "tabular";
 export type BomPlacement = { designator: string; side: BomSide | null; component_key: string };
 export type BomGroup = {
   component_key: string;
@@ -73,20 +73,32 @@ export type BomGroup = {
   placements: BomPlacement[];
   extra_fields: Record<string, string>;
 };
+export type NormalizedBom = { source_name: string; groups: BomGroup[] };
+/** The welding workspace state: one project, plus the bridge that drives its canvas. */
 export type CachedBomSession = {
   session_id: string;
-  bom_file_id: string;
+  project_id: string;
+  project_name: string;
   original_name: string;
-  display_name: string;
   sha256: string;
   cache_name: string;
-  /** `null` for tabular BOMs: there is no interactive canvas to load. */
+  /** `null` for tabular projects: there is no interactive canvas to load. */
   cache_path: string | null;
-  kind: BomImportKind;
+  kind: ProjectKind;
   token: string;
-  normalized: { source_name: string; groups: BomGroup[] };
+  normalized: NormalizedBom;
 };
-export type BomFileSummary = { id: string; display_name: string; original_name: string; created_at: string; active: boolean };
+/** What an import stored: the project row and the analysis behind it. */
+export type ImportedProject = {
+  project_id: string;
+  name: string;
+  original_name: string;
+  cache_name: string;
+  kind: ProjectKind;
+  has_table: boolean;
+  normalized: NormalizedBom;
+};
+export type ProjectSummary = { id: string; name: string; original_name: string; kind: ProjectKind; has_table: boolean; created_at: string; active: boolean };
 export type ResolvedBomSelection = {
   session_id: string;
   component_key: string;
@@ -137,7 +149,7 @@ export type Movement = {
   before_quantity: number | null;
   after_quantity: number | null;
   reason: string;
-  bom_display_name: string | null;
+  project_name: string | null;
   session_id: string | null;
   created_at: string;
   reverses_movement_id: string | null;
@@ -156,13 +168,19 @@ export type DesktopApi = {
   adjustStock: (id: string, delta: number, reason: string) => Promise<Part>;
   deletePart: (id: string) => Promise<void>;
   lookupLcsc: (lcscCode: string) => Promise<LcscPartInfo>;
-  restoreActiveInteractiveBom: () => Promise<CachedBomSession | null>;
-  listBomFiles: () => Promise<BomFileSummary[]>;
-  /** Reopen an imported BOM from its stored analysis snapshot. */
-  analyzeBomFile: (id: string) => Promise<unknown>;
-  removeBomFile: (id: string) => Promise<void>;
-  /** Make an imported BOM the active welding session (by record id or source file). */
-  activateImportedBom: (input: { id?: string; sourcePath?: string; displayName?: string }) => Promise<CachedBomSession>;
+  /** Reopen the project session the database still considers active. */
+  restoreActiveWeldingSession: () => Promise<CachedBomSession | null>;
+  listProjects: () => Promise<ProjectSummary[]>;
+  /** Import a BOM file (interactive HTML, CSV or XLSX) as a project. */
+  importProject: (input: { source_path: string; name?: string | null; mapping?: Record<string, string>; companion_csv_path?: string | null }) => Promise<ImportedProject>;
+  /** Merge the source a project is still missing (its table, or its canvas). */
+  supplementProject: (input: { project_id: string; source_path: string; mapping?: Record<string, string> }) => Promise<ImportedProject>;
+  /** Reopen a project's stored analysis snapshot. */
+  analyzeProject: (id: string) => Promise<unknown>;
+  renameProject: (id: string, name: string) => Promise<ProjectSummary>;
+  removeProject: (id: string) => Promise<void>;
+  /** Open the welding workspace for one project, making it the active session. */
+  openProjectWelding: (id: string) => Promise<CachedBomSession>;
   /** Resolve a selection reported by the BOM frame using the bridge contract. */
   resolveBomSelection: (token: string, designators: string[]) => Promise<ResolvedBomSelection>;
   confirmTake: (input: ConfirmTakeInput) => Promise<TakeResult>;
@@ -188,11 +206,14 @@ export const desktopApi: DesktopApi = {
   adjustStock: async (id, delta, reason) => normalizePart(await invoke<PartDto>("adjust_stock", { id, delta, reason })),
   deletePart: (id) => invoke("delete_part", { id }),
   lookupLcsc: (lcscCode) => invoke("lookup_lcsc", { lcscCode }),
-  restoreActiveInteractiveBom: () => invoke("restore_active_interactive_bom"),
-  listBomFiles: () => invoke("list_bom_files"),
-  analyzeBomFile: (id) => invoke("analyze_bom_file", { id }),
-  removeBomFile: (id) => invoke("remove_bom_file", { id }),
-  activateImportedBom: (input) => invoke("activate_imported_bom", input),
+  restoreActiveWeldingSession: () => invoke("restore_active_welding_session"),
+  listProjects: () => invoke("list_projects"),
+  importProject: (input) => invoke("import_project", { input }),
+  supplementProject: (input) => invoke("supplement_project", { input }),
+  analyzeProject: (id) => invoke("analyze_project", { id }),
+  renameProject: (id, name) => invoke("rename_project", { id, name }),
+  removeProject: (id) => invoke("remove_project", { id }),
+  openProjectWelding: (id) => invoke("open_project_welding", { id }),
   // 把原始桥接消息原样交给 Rust 校验契约，不在 webview 层重新实现一套规则。
   resolveBomSelection: (token, designators) => invoke("resolve_bom_selection", { message: { type: "partnest:bom-selection", token, designators } }),
   confirmTake: (input) => invoke("confirm_take", { input }),
