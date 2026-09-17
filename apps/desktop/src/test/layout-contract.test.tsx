@@ -26,6 +26,20 @@ describe("compact desktop layout contract", () => {
     expect(document.documentElement).not.toHaveAttribute("data-layout-measured");
   });
 
+  it("keeps the movements ledger filling the page", () => {
+    window.history.pushState({}, "", "/movements");
+    render(<App />);
+
+    const page = screen.getByRole("region", { name: "库存流水" });
+    expect(page).toHaveClass("operations-page", "movements-page");
+    // The fill comes from the panel being the page section's own child, which is
+    // what the `.movements-page > .pn-table-wrap` flex rule stretches.
+    const panel = page.querySelector(".pn-table-wrap");
+    expect(panel).toBeTruthy();
+    expect(panel?.parentElement).toBe(page);
+    expect(panel?.querySelector("table")).toHaveClass("pn-data-table");
+  });
+
   it("exposes stable CSS contracts without measuring jsdom layout", () => {
     render(<App />);
     const toolbar = document.querySelector<HTMLElement>(".pn-toolbar");

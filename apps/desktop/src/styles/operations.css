@@ -14,7 +14,11 @@
 }
 
 .operations-local-toolbar .pn-control { width: min(18rem, 100%); }
-.movements-page .pn-table-wrap { max-height: calc(100vh - 5rem); }
+/* The ledger owns the page: a definite height like the inventory list, so the
+   table panel fills down to the bottom edge and scrolls inside itself. */
+.movements-page { height: calc(100vh - var(--toolbar-height) - 1.5rem); }
+.movements-page > .pn-table-wrap { flex: 1 1 auto; min-height: 0; }
+.movements-page .pn-data-table { height: 100%; }
 .movement-delta { display: inline-flex; align-items: center; gap: .375rem; }
 .movement-delta .pn-status-badge { flex: 0 0 auto; }
 
