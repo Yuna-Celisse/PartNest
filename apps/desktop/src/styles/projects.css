@@ -32,17 +32,14 @@
 .project-context-menu button:hover { background: var(--bg-panel); }
 .project-context-menu button:last-child { color: var(--danger); }
 .project-import-form { display: grid; min-width: 24rem; gap: .625rem; }
-.project-import-source { display: grid; gap: .375rem; margin: 0; border: 1px solid var(--border); padding: .5rem; }
-.project-import-source legend { padding: 0 .25rem; color: var(--text-muted); font-size: 11px; }
-.project-import-source__option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .5rem; border: 1px solid transparent; padding: .4rem .45rem; cursor: pointer; }
-.project-import-source__option[data-selected] { border-color: var(--accent); background: var(--bg-raised); }
-.project-import-source__option span { display: grid; gap: .1rem; }
-.project-import-source__option strong { color: var(--text); font-size: 12px; font-weight: 600; }
-.project-import-source__option small { color: var(--text-muted); font-size: 11px; }
+.project-import-source { display: grid; gap: .375rem; border: 1px solid var(--border); padding: .5rem .6rem; }
+.project-import-source[data-chosen] { border-color: var(--accent); background: var(--bg-raised); }
+.project-import-source__text { display: grid; gap: .1rem; }
+.project-import-source__text strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.project-import-source__text small { color: var(--text-muted); font-size: 11px; }
 .project-import-note { margin: 0; color: var(--text-muted); font-size: 12px; }
 .project-import-file { display: flex; align-items: center; gap: .375rem; }
 .project-import-file__name { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.project-import-file__companion { margin: 0; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .project-import-actions { display: flex; justify-content: flex-end; gap: .375rem; padding-top: .25rem; }
 .project-rename-form { display: grid; gap: .75rem; min-width: 20rem; }
 .project-rename-form .pn-form-field { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: .5rem; }

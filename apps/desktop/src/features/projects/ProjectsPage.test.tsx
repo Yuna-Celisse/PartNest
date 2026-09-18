@@ -42,9 +42,10 @@ const imported = (overrides: Partial<ImportedProject> = {}): ImportedProject => 
 });
 
 // The label also carries its hint text, so match the option by its title.
-const sourceLabel: Record<ProjectImportSource, RegExp> = {
-  interactive: /从可交互式 BOM 导入/,
-  tabular: /从普通 BOM 表导入/,
+// Each slot is named by its source; keep these in step with the dialog.
+const slotLabel: Record<ProjectImportSource, string> = {
+  interactive: "可交互式 BOM（HTML）",
+  tabular: "普通 BOM 表（CSV / XLS / XLSX）",
 };
 
 function api(overrides: Partial<ProjectImportApi> = {}): ProjectImportApi {
@@ -62,21 +63,25 @@ function renderPage(ui: JSX.Element) {
   return render(<MemoryRouter initialEntries={["/projects"]}>{ui}</MemoryRouter>);
 }
 
-/** Drive the real import path: open the dialog, choose the source, pick the file, confirm. */
-async function importFile(path: string, options: { companion?: string; source?: ProjectImportSource } = {}) {
-  const source = options.source ?? (path.toLowerCase().endsWith(".html") ? "interactive" : "tabular");
+/** Pick a file into one slot of the import window. */
+async function chooseFile(dialog: HTMLElement, source: ProjectImportSource, name: string) {
+  fireEvent.click(within(dialog).getByRole("button", { name: `选择文件：${slotLabel[source]}` }));
+  await waitFor(() => expect(within(dialog).getByText(name.split(/[\\/]/).pop() ?? name)).toBeInTheDocument());
+}
+
+/** Drive the real import path: open the window, fill the slots, confirm. */
+async function importFiles(files: Partial<Record<ProjectImportSource, string>>) {
   fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
   const dialog = await screen.findByRole("dialog", { name: "导入项目" });
-  fireEvent.click(within(dialog).getByRole("radio", { name: sourceLabel[source] }));
-  fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
-  await waitFor(() => expect(within(dialog).getByText(path.split(/[\\/]/).pop() ?? path)).toBeInTheDocument());
-  if (options.companion) {
-    fireEvent.click(within(dialog).getByRole("button", { name: "配套表格" }));
-    await waitFor(() => expect(within(dialog).getByText(`配套：${options.companion}`)).toBeInTheDocument());
+  for (const [source, path] of Object.entries(files) as [ProjectImportSource, string][]) {
+    await chooseFile(dialog, source, path);
   }
-  fireEvent.click(within(dialog).getByRole("button", { name: "确定导入" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "创建项目" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "导入项目" })).not.toBeInTheDocument());
 }
+
+const importFile = (path: string, source: ProjectImportSource = path.toLowerCase().endsWith(".html") ? "interactive" : "tabular") =>
+  importFiles({ [source]: path } as Partial<Record<ProjectImportSource, string>>);
 
 /** The mapping dialog the page opens above the workspace. */
 async function mappingDialog() {
@@ -98,7 +103,7 @@ describe("ProjectsPage", () => {
     expect(screen.getByRole("region", { name: "项目管理" })).not.toHaveClass("project-empty-state");
   });
 
-  it("opens a two-source dialog before anything is picked", async () => {
+  it("opens one window with a slot for each source", async () => {
     const pickFile = vi.fn().mockResolvedValue(null);
     renderPage(<ProjectsPage api={api()} pickFile={pickFile} />);
     const toolbar = screen.getByRole("toolbar", { name: "项目工具栏" });
@@ -108,39 +113,36 @@ describe("ProjectsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
     const dialog = await screen.findByRole("dialog", { name: "导入项目" });
     expect(pickFile).not.toHaveBeenCalled();
-    expect(within(dialog).getByRole("radio", { name: sourceLabel.interactive })).toBeChecked();
-    expect(within(dialog).getByRole("radio", { name: sourceLabel.tabular })).not.toBeChecked();
-    expect(within(dialog).getByRole("button", { name: "确定导入" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.interactive}` })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.tabular}` })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "创建项目" })).toBeDisabled();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "导入项目" })).not.toBeInTheDocument());
   });
 
-  it("filters the file picker by the chosen source", async () => {
+  it("filters each slot's file picker by its own source", async () => {
     const pickFile = vi.fn().mockResolvedValue(null);
     renderPage(<ProjectsPage api={api()} pickFile={pickFile} />);
 
     fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
     const dialog = await screen.findByRole("dialog", { name: "导入项目" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.interactive}` }));
     expect(pickFile).toHaveBeenLastCalledWith("interactive");
-
-    fireEvent.click(within(dialog).getByRole("radio", { name: sourceLabel.tabular }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.tabular}` }));
     expect(pickFile).toHaveBeenLastCalledWith("tabular");
   });
 
-  it("blocks a file that does not match the chosen source", async () => {
+  it("blocks the window when a slot holds the wrong kind of file", async () => {
     const pickFile = vi.fn().mockResolvedValue("notes.txt");
     const importProject = vi.fn();
     renderPage(<ProjectsPage api={api({ importProject })} pickFile={pickFile} />);
     fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
     const dialog = await screen.findByRole("dialog", { name: "导入项目" });
-    fireEvent.click(within(dialog).getByRole("radio", { name: sourceLabel.tabular }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.tabular}` }));
 
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("与导入来源不符");
-    expect(within(dialog).getByRole("button", { name: "确定导入" })).toBeDisabled();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("不是普通 BOM 表");
+    expect(within(dialog).getByRole("button", { name: "创建项目" })).toBeDisabled();
     expect(importProject).not.toHaveBeenCalled();
   });
 
@@ -150,7 +152,7 @@ describe("ProjectsPage", () => {
     const navigate = vi.fn();
     renderPage(<ProjectsPage api={api({ importProject, listProjects })} pickFile={vi.fn().mockResolvedValue("C:/boms/board.csv")} navigate={navigate} />);
 
-    await importFile("C:/boms/board.csv", { source: "tabular" });
+    await importFile("C:/boms/board.csv", "tabular");
 
     await waitFor(() => expect(importProject).toHaveBeenCalledWith({ source_path: "C:/boms/board.csv" }));
     expect(await screen.findByRole("heading", { name: "缺料分析" })).toBeInTheDocument();
@@ -163,7 +165,7 @@ describe("ProjectsPage", () => {
     const navigate = vi.fn();
     renderPage(<ProjectsPage api={api({ openProjectWelding })} pickFile={vi.fn().mockResolvedValue("board.csv")} navigate={navigate} />);
 
-    await importFile("board.csv", { source: "tabular" });
+    await importFile("board.csv", "tabular");
     fireEvent.click(await screen.findByRole("button", { name: "打开焊接工作台" }));
 
     await waitFor(() => expect(openProjectWelding).toHaveBeenCalledWith("p-1"));
@@ -174,7 +176,7 @@ describe("ProjectsPage", () => {
     const importProject = vi.fn().mockRejectedValue(new Error("该文件不是有效的 BOM"));
     renderPage(<ProjectsPage api={api({ importProject })} pickFile={vi.fn().mockResolvedValue("board.csv")} />);
 
-    await importFile("board.csv", { source: "tabular" });
+    await importFile("board.csv", "tabular");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("不是有效的 BOM");
     expect(screen.queryByRole("button", { name: "打开焊接工作台" })).not.toBeInTheDocument();
@@ -279,12 +281,7 @@ describe("ProjectsPage", () => {
     const pickFile = vi.fn().mockResolvedValue("board.csv");
     renderPage(<ProjectsPage api={api({ inspectTabularBom, importProject })} pickFile={pickFile} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
-    const importDialog = await screen.findByRole("dialog", { name: "导入项目" });
-    fireEvent.click(within(importDialog).getByRole("radio", { name: sourceLabel.tabular }));
-    fireEvent.click(within(importDialog).getByRole("button", { name: "选择文件" }));
-    await waitFor(() => expect(within(importDialog).getByText("board.csv")).toBeInTheDocument());
-    fireEvent.click(within(importDialog).getByRole("button", { name: "确定导入" }));
+    await importFile("board.csv", "tabular");
 
     const dialog = await mappingDialog();
     expect(importProject).not.toHaveBeenCalled();
@@ -302,7 +299,7 @@ describe("ProjectsPage", () => {
     const importProject = vi.fn();
     renderPage(<ProjectsPage api={api({ inspectTabularBom, importProject })} pickFile={vi.fn().mockResolvedValue("board.csv")} />);
 
-    await importFile("board.csv", { source: "tabular" });
+    await importFile("board.csv", "tabular");
     const dialog = await mappingDialog();
     const fields = screen.getAllByRole("combobox");
     fireEvent.change(fields[0], { target: { value: "Part" } });
@@ -315,19 +312,18 @@ describe("ProjectsPage", () => {
     expect(dialog).not.toBeVisible();
   });
 
-  it("attaches a companion CSV to an interactive import", async () => {
+  it("combines the interactive export with a table chosen in the same window", async () => {
     const previewInteractiveBom = vi.fn().mockResolvedValue(ready);
     const importProject = vi.fn().mockResolvedValue(imported({ kind: "interactive", original_name: "board.html", cache_name: "hash.html" }));
     renderPage(<ProjectsPage
       api={api({ previewInteractiveBom, importProject })}
-      pickFile={vi.fn().mockResolvedValue("board.html")}
-      pickCompanionFile={vi.fn().mockResolvedValue("parts.csv")}
+      pickFile={vi.fn(async (source: ProjectImportSource) => (source === "interactive" ? "board.html" : "parts.csv"))}
     />);
 
-    await importFile("board.html", { companion: "parts.csv" });
+    await importFiles({ interactive: "board.html", tabular: "parts.csv" });
 
     await waitFor(() => expect(previewInteractiveBom).toHaveBeenLastCalledWith("board.html", "parts.csv"));
-    await waitFor(() => expect(importProject).toHaveBeenLastCalledWith({ source_path: "board.html", companion_csv_path: "parts.csv" }));
+    await waitFor(() => expect(importProject).toHaveBeenLastCalledWith({ source_path: "board.html", companion_path: "parts.csv" }));
   });
 
   it("offers the supplementary import for a project that still lacks a source", async () => {
@@ -342,10 +338,8 @@ describe("ProjectsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "补充导入" }));
 
     const dialog = await screen.findByRole("dialog", { name: "补充导入" });
-    expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
-    expect(within(dialog).getByText(/补充普通 BOM 表/)).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "配套表格" })).not.toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    expect(within(dialog).queryByRole("button", { name: `选择文件：${slotLabel.interactive}` })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: `选择文件：${slotLabel.tabular}` }));
     expect(pickFile).toHaveBeenLastCalledWith("tabular");
     await waitFor(() => expect(within(dialog).getByText("parts.xlsx")).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("button", { name: "确定补充导入" }));
@@ -368,7 +362,7 @@ describe("ProjectsPage", () => {
   it("shows import stages and an analysis summary for the new project", async () => {
     renderPage(<ProjectsPage api={api()} pickFile={vi.fn().mockResolvedValue("board.csv")} />);
 
-    await importFile("board.csv", { source: "tabular" });
+    await importFile("board.csv", "tabular");
 
     const steps = await screen.findByRole("navigation", { name: "项目导入流程" });
     expect(within(steps).getByText("解析与映射")).toBeInTheDocument();
@@ -386,7 +380,7 @@ describe("ProjectsPage", () => {
       part({ id: "candidate-b", name: "red", lcsc_code: "", quantity: 4 }),
     ]) })} pickFile={vi.fn().mockResolvedValue("bom.csv")} />);
 
-    await importFile("bom.csv", { source: "tabular" });
+    await importFile("bom.csv", "tabular");
 
     expect(await screen.findByRole("heading", { name: "缺料分析" })).toBeInTheDocument();
     expect(screen.getByText("精确匹配")).toBeInTheDocument();
@@ -402,7 +396,7 @@ describe("ProjectsPage", () => {
     const importProject = vi.fn().mockResolvedValue(imported({ normalized: bom }));
     renderPage(<ProjectsPage api={api({ inspectTabularBom, importProject, listParts: vi.fn().mockResolvedValue([part({ id: "a", name: "red", lcsc_code: "" }), part({ id: "b", name: "red", lcsc_code: "" })]) })} pickFile={vi.fn().mockResolvedValue("bom.csv")} />);
 
-    await importFile("bom.csv", { source: "tabular" });
+    await importFile("bom.csv", "tabular");
 
     expect(await screen.findByText("候选匹配")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "确认匹配" })[0]);
@@ -420,9 +414,9 @@ describe("ProjectsPage", () => {
       .mockResolvedValueOnce("new.csv");
     renderPage(<ProjectsPage api={api({ inspectTabularBom })} pickFile={pickFile} />);
 
-    await importFile("old.csv", { source: "tabular" });
+    await importFile("old.csv", "tabular");
     expect(await screen.findByRole("heading", { name: "缺料分析" })).toBeInTheDocument();
-    await importFile("new.csv", { source: "tabular" });
+    await importFile("new.csv", "tabular");
     expect(await mappingDialog()).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
 
@@ -435,7 +429,7 @@ describe("ProjectsPage", () => {
     const inspectTabularBom = vi.fn().mockResolvedValue({ kind: "NeedsMapping" as const, headers: ["Part", "Qty"], suggestions: {} });
     renderPage(<ProjectsPage api={api({ inspectTabularBom })} pickFile={vi.fn().mockResolvedValue("new.csv")} />);
 
-    await importFile("new.csv", { source: "tabular" });
+    await importFile("new.csv", "tabular");
     expect(await mappingDialog()).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
 

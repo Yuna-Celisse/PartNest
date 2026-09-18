@@ -30,10 +30,9 @@ describe("projects page scroll layout contract", () => {
     render(<MemoryRouter><ProjectsPage api={api} pickFile={vi.fn().mockResolvedValue("board.csv")} /></MemoryRouter>);
     fireEvent.click(screen.getByRole("button", { name: "导入项目" }));
     const dialog = await screen.findByRole("dialog", { name: "导入项目" });
-    fireEvent.click(within(dialog).getByRole("radio", { name: /从普通 BOM 表导入/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件：普通 BOM 表（CSV / XLS / XLSX）" }));
     await waitFor(() => expect(within(dialog).getByText("board.csv")).toBeInTheDocument());
-    fireEvent.click(within(dialog).getByRole("button", { name: "确定导入" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建项目" }));
     const table = await screen.findByRole("table", { name: "BOM 分析表" });
 
     const layout = document.querySelector(".project-layout");

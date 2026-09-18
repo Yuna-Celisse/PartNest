@@ -31,9 +31,9 @@ export type ImportPreview =
 export type ProjectImportApi = {
   inspectTabularBom: (sourcePath: string, mapping?: FieldMapping) => Promise<unknown>;
   /** Read-only analysis of an interactive BOM: nothing is stored or switched. */
-  previewInteractiveBom: (sourcePath: string, companionCsvPath?: string) => Promise<unknown>;
+  previewInteractiveBom: (sourcePath: string, companionPath?: string) => Promise<unknown>;
   /** Store the analysed file as a project; the only write this page makes. */
-  importProject: (input: { source_path: string; name?: string; mapping?: FieldMapping; companion_csv_path?: string }) => Promise<ImportedProject>;
+  importProject: (input: { source_path: string; name?: string; mapping?: FieldMapping; companion_path?: string }) => Promise<ImportedProject>;
   /** Merge the source an existing project is still missing. */
   supplementProject: (input: { project_id: string; source_path: string; mapping?: FieldMapping }) => Promise<ImportedProject>;
   listParts: () => Promise<Part[]>;
@@ -65,7 +65,7 @@ const fieldNames: FieldName[] = ["quantity", "designators", "name", "value", "pa
 
 const defaultApi: ProjectImportApi = {
   inspectTabularBom: (sourcePath, mapping) => invoke("inspect_tabular_bom", { sourcePath, mapping }),
-  previewInteractiveBom: (sourcePath, companionCsvPath) => invoke("preview_interactive_bom", { sourcePath, companionCsvPath }),
+  previewInteractiveBom: (sourcePath, companionPath) => invoke("preview_interactive_bom", { sourcePath, companionPath }),
   importProject: (input) => desktopApi.importProject(input),
   supplementProject: (input) => desktopApi.supplementProject(input),
   listParts: () => desktopApi.listParts(),
@@ -184,7 +184,7 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
         ? await api.importProject({
           source_path: sourcePath,
           ...(supplied ? { mapping: supplied } : {}),
-          ...(suppliedCompanionPath ? { companion_csv_path: suppliedCompanionPath } : {}),
+          ...(suppliedCompanionPath ? { companion_path: suppliedCompanionPath } : {}),
         })
         : await api.supplementProject({
           project_id: target.projectId,

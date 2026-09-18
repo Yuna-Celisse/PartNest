@@ -46,14 +46,14 @@ impl ProjectSummary {
 }
 
 /// Import arguments. `mapping` only applies to tabular BOMs whose headers could
-/// not be resolved on their own, and `companion_csv_path` only to interactive
+/// not be resolved on their own, and `companion_path` only to interactive
 /// ones, whose export may ship without the parts columns the viewer expects.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ImportProjectInput {
     pub source_path: String,
     pub name: Option<String>,
     pub mapping: Option<FieldMapping>,
-    pub companion_csv_path: Option<String>,
+    pub companion_path: Option<String>,
 }
 
 #[tauri::command(rename = "list_projects")]
@@ -109,7 +109,7 @@ pub fn import_project(
             input.name.as_deref(),
             input.mapping.as_ref(),
             input
-                .companion_csv_path
+                .companion_path
                 .as_deref()
                 .map(std::path::Path::new),
         )
@@ -183,9 +183,9 @@ pub fn inspect_tabular_bom(
 #[tauri::command(rename = "preview_interactive_bom")]
 pub fn preview_interactive_bom_command(
     source_path: String,
-    companion_csv_path: Option<String>,
+    companion_path: Option<String>,
 ) -> Result<ImportPreview, String> {
-    let companion_path = companion_csv_path.as_deref().map(std::path::Path::new);
+    let companion_path = companion_path.as_deref().map(std::path::Path::new);
     preview_interactive_bom(std::path::Path::new(&source_path), companion_path)
         .map(ImportPreview::Ready)
         .map_err(|error| error.user_message())

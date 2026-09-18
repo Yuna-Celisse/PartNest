@@ -1,4 +1,4 @@
-import { ImportProjectDialog, defaultPickCompanionFile, defaultPickFile, type ProjectImportSource } from "./ImportProjectDialog";
+import { ImportProjectDialog, defaultPickFile, type ProjectImportSource } from "./ImportProjectDialog";
 import { ProjectRenameDialog } from "./ProjectRenameDialog";
 import { BomAnalysisTable } from "./BomAnalysisTable";
 import { FieldMappingDialog } from "./FieldMappingDialog";
@@ -27,7 +27,7 @@ const missingSource = (project: ProjectSummary): ProjectImportSource | null =>
 const sourcesLabel = (project: ProjectSummary): string =>
   project.kind === "interactive" && project.has_table ? "交互式 + 表格" : kindLabel[project.kind];
 
-export function ProjectsPage({ api, pickFile, pickCompanionFile, navigate }: { api?: ProjectImportApi; pickFile?: (source: ProjectImportSource) => Promise<string | null>; pickCompanionFile?: () => Promise<string | null>; navigate?: (path: string) => void }) {
+export function ProjectsPage({ api, pickFile, navigate }: { api?: ProjectImportApi; pickFile?: (source: ProjectImportSource) => Promise<string | null>; navigate?: (path: string) => void }) {
   const state = useProjectImport({ api });
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [menu, setMenu] = useState<{ project: ProjectSummary; x: number; y: number } | null>(null);
@@ -165,12 +165,15 @@ export function ProjectsPage({ api, pickFile, pickCompanionFile, navigate }: { a
     {importing && <ImportProjectDialog
       supplement={importing.project && importing.source ? { kind: importing.source, projectName: importing.project.name } : undefined}
       pickFile={pickFile ?? defaultPickFile}
-      pickCompanionFile={pickCompanionFile ?? defaultPickCompanionFile}
       onCancel={() => setImporting(null)}
-      onConfirm={({ path, companionPath }) => {
+      onConfirm={(picked) => {
         const target = importing.project;
+        const source = picked.interactivePath ?? picked.tablePath;
         setImporting(null);
-        void (target && importing.source ? state.supplementFrom(target.id, path) : state.importFrom(path, companionPath));
+        if (!source) return;
+        void (target && importing.source
+          ? state.supplementFrom(target.id, source)
+          : state.importFrom(source, picked.interactivePath ? picked.tablePath : undefined));
       }}
     />}
     {renaming && <ProjectRenameDialog project={renaming} busy={busy} onCancel={() => setRenaming(null)} onSubmit={(name) => { setBusy(true); void submitRename(name).finally(() => setBusy(false)); }} />}

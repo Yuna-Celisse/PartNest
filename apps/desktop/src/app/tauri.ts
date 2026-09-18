@@ -172,7 +172,7 @@ export type DesktopApi = {
   restoreActiveWeldingSession: () => Promise<CachedBomSession | null>;
   listProjects: () => Promise<ProjectSummary[]>;
   /** Import a BOM file (interactive HTML, CSV or XLSX) as a project. */
-  importProject: (input: { source_path: string; name?: string | null; mapping?: Record<string, string>; companion_csv_path?: string | null }) => Promise<ImportedProject>;
+  importProject: (input: { source_path: string; name?: string | null; mapping?: Record<string, string>; companion_path?: string | null }) => Promise<ImportedProject>;
   /** Merge the source a project is still missing (its table, or its canvas). */
   supplementProject: (input: { project_id: string; source_path: string; mapping?: Record<string, string> }) => Promise<ImportedProject>;
   /** Reopen a project's stored analysis snapshot. */
