@@ -11,6 +11,47 @@ const part = { id: "part-1", name: "10k resistor", category: "resistor", package
 const box = { id: 1, name: "BOX1", rows: 2, cols: 2, occupied_slots: ["A0"] };
 
 describe("InventoryPage", () => {
+  it("uses direction-specific reasons and resets incompatible reasons when switching modes", async () => {
+    const api = { listParts: vi.fn().mockResolvedValue([part]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn().mockResolvedValue({ ...part, quantity: 1 }) };
+    render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "调整库存" }));
+    const reason = screen.getByLabelText("原因");
+    const choices = () => Array.from(reason.querySelectorAll("option"), (option) => option.textContent);
+    expect(choices()).toEqual(["采购入库", "退料入库", "盘盈入库", "其他入库"]);
+    expect(reason).toHaveValue("采购入库");
+    fireEvent.change(reason, { target: { value: "退料入库" } });
+    fireEvent.click(screen.getByRole("button", { name: "减少库存" }));
+    expect(choices()).toEqual(["领用出库", "损坏报废", "退货出库", "盘亏出库", "其他出库"]);
+    expect(reason).toHaveValue("领用出库");
+    fireEvent.change(reason, { target: { value: "损坏报废" } });
+    fireEvent.click(screen.getByRole("button", { name: "增加库存" }));
+    expect(reason).toHaveValue("采购入库");
+    expect(choices()).not.toContain("损坏报废");
+    fireEvent.click(screen.getByRole("button", { name: "减少库存" }));
+    fireEvent.change(reason, { target: { value: "损坏报废" } });
+    fireEvent.change(screen.getByLabelText("数量"), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认调整" }));
+    await waitFor(() => expect(api.adjustStock).toHaveBeenCalledWith("part-1", -2, "损坏报废"));
+  });
+
+  it.each(["名称", "规格", "LCSC ID", "盒位", "库存"])("sorts %s in both directions using natural text and numeric order", async (header) => {
+    const lower = { ...part, id: "lower", name: "器件2", category: "", package: "0603", mpn: "", lcsc_code: "C2", box_id: 2, slot: "A2", quantity: 2 };
+    const higher = { ...part, id: "higher", name: "器件10", category: "", package: "0805", mpn: "", lcsc_code: "C10", box_id: 10, slot: "A10", quantity: 10 };
+    const source = [higher, lower];
+    const api = { listParts: vi.fn().mockResolvedValue(source), listBoxes: vi.fn().mockResolvedValue([{ ...box, id: 2, name: "盒2" }, { ...box, id: 10, name: "盒10" }]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn() };
+    render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
+    await screen.findByText("器件2");
+    const names = () => Array.from(screen.getByRole("table", { name: "器件列表" }).querySelectorAll("tbody tr"), (row) => row.firstElementChild?.textContent);
+    expect(names()).toEqual(["器件10", "器件2"]);
+    fireEvent.click(screen.getByRole("button", { name: header }));
+    expect(names()).toEqual(["器件2", "器件10"]);
+    expect(screen.getByRole("columnheader", { name: header })).toHaveAttribute("aria-sort", "ascending");
+    fireEvent.click(screen.getByRole("button", { name: header }));
+    expect(names()).toEqual(["器件10", "器件2"]);
+    expect(screen.getByRole("columnheader", { name: header })).toHaveAttribute("aria-sort", "descending");
+    expect(source.map((row) => row.id)).toEqual(["higher", "lower"]);
+  });
+
   it("shows the complete part form in a drawer", async () => {
     const api = { listParts: vi.fn().mockResolvedValue([]), listBoxes: vi.fn().mockResolvedValue([box]), createPart: vi.fn(), updatePart: vi.fn(), adjustStock: vi.fn() };
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
@@ -228,9 +269,7 @@ describe("inventory deletion", () => {
     const decision = new Promise<boolean>((resolve) => { decide = resolve; });
     vi.mocked(confirmDialog).mockReturnValue(decision);
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(api.deletePart).not.toHaveBeenCalled();
     expect(screen.getByText(part.name)).toBeVisible();
@@ -249,9 +288,7 @@ describe("inventory deletion", () => {
     const api = deletionApi();
     const confirm = vi.mocked(confirmDialog).mockResolvedValue(false);
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect(confirm.mock.calls.at(-1)?.[0]).toContain("10k resistor");
     expect(confirm.mock.calls.at(-1)?.[0]).toContain("剩余库存 3");
     expect(confirm.mock.calls.at(-1)?.[0]).toContain("历史取用将无法撤销");
@@ -267,9 +304,7 @@ describe("inventory deletion", () => {
     api.deletePart.mockImplementation(() => new Promise<void>((resolve) => { resolveDelete = resolve; }));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     await waitFor(() => expect(api.deletePart).toHaveBeenCalledWith(part.id));
     expect(screen.getByText(part.name)).toBeVisible();
     resolveDelete();
@@ -286,9 +321,7 @@ describe("inventory deletion", () => {
     api.deletePart.mockRejectedValue({ message: "删除失败，数据库忙" });
     vi.mocked(confirmDialog).mockResolvedValue(true);
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect(await screen.findByText("删除失败，数据库忙")).toBeVisible();
     expect(screen.getByText(part.name)).toBeVisible();
     expect(api.listBoxes).toHaveBeenCalledTimes(1);
@@ -299,9 +332,7 @@ describe("inventory deletion", () => {
     api.listBoxes.mockResolvedValueOnce([box]).mockRejectedValue(new Error("offline"));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect(await screen.findByText("器件已删除，但盒位刷新失败，请刷新页面后重试")).toBeVisible();
     expect(screen.queryByText(part.name)).not.toBeInTheDocument();
   });
@@ -310,9 +341,7 @@ describe("inventory deletion", () => {
     const api = deletionApi();
     vi.mocked(confirmDialog).mockRejectedValue(new Error("确认框不可用"));
     render(<MemoryRouter><InventoryPage api={api} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /更多操作$/ }));
-
-    fireEvent.click(await screen.findByRole("menuitem", { name: "删除器件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect(await screen.findByText("确认框不可用")).toBeVisible();
     expect(api.deletePart).not.toHaveBeenCalled();
     expect(screen.getByText(part.name)).toBeVisible();

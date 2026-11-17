@@ -388,6 +388,7 @@ fn canonical_header(header: &str) -> Option<&'static str> {
         "supplier part"
         | "supplier part number"
         | "lcsc"
+        | "lcsc_code"
         | "lcsc code"
         | "supplier code"
         | "立创商城编号"

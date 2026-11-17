@@ -98,6 +98,21 @@ pub async fn import_project(
     app: AppHandle,
 ) -> Result<ImportedProject, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if std::path::Path::new(&input.source_path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            if input.companion_path.is_some() {
+                return Err("KiCad ZIP 请单独导入".into());
+            }
+            let prepared = crate::bom::kicad_package::prepare(
+                std::path::Path::new(&input.source_path),
+                input.mapping.as_ref(),
+            )?;
+            let state = app.state::<Mutex<Database>>();
+            let database = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+            return crate::bom::kicad_package::commit(&database, prepared, input.name.as_deref());
+        }
         let prepared = crate::bom::imports::prepare_import(
             std::path::Path::new(&input.source_path),
             input.mapping.as_ref(),
@@ -111,6 +126,124 @@ pub async fn import_project(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn get_project_matches(
+    project_id: String,
+    database: State<'_, Mutex<Database>>,
+) -> Result<std::collections::BTreeMap<String, ProjectMatch>, String> {
+    let db = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+    let mut stmt = db.connection().prepare("SELECT m.component_key,m.part_id,m.manual FROM project_matches m JOIN parts p ON p.id=m.part_id WHERE m.project_id=?1 AND p.deleted_at IS NULL").map_err(|e| e.to_string())?;
+    let result = stmt
+        .query_map([project_id], |row| {
+            Ok((
+                row.get(0)?,
+                ProjectMatch {
+                    part_id: row.get(1)?,
+                    manual: row.get(2)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string());
+    result
+}
+
+#[derive(Serialize)]
+pub struct ProjectMatch {
+    pub part_id: String,
+    pub manual: bool,
+}
+
+#[tauri::command]
+pub fn set_project_match(
+    project_id: String,
+    component_key: String,
+    part_id: String,
+    manual: bool,
+    database: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+    save_project_match(&db, &project_id, &component_key, &part_id, manual)
+}
+
+pub fn save_project_match(
+    db: &Database,
+    project_id: &str,
+    component_key: &str,
+    part_id: &str,
+    manual: bool,
+) -> Result<(), String> {
+    let project =
+        crate::bom::projects::project_record(db, project_id).map_err(|e| e.user_message())?;
+    if !project
+        .snapshot()
+        .map_err(|e| e.user_message())?
+        .groups
+        .iter()
+        .any(|group| group.component_key == component_key)
+    {
+        return Err("项目中找不到该 BOM 器件".into());
+    }
+    let changed = db.connection().execute("INSERT INTO project_matches (project_id,component_key,part_id,manual) SELECT ?1,?2,id,?4 FROM parts WHERE id=?3 AND deleted_at IS NULL ON CONFLICT(project_id,component_key) DO UPDATE SET part_id=excluded.part_id,manual=excluded.manual", rusqlite::params![project_id,component_key,part_id,manual]).map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("库存器件已删除或不存在，请重新选择".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_project_match(
+    project_id: String,
+    component_key: String,
+    database: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+    remove_project_match(&db, &project_id, &component_key)
+}
+
+pub fn remove_project_match(
+    db: &Database,
+    project_id: &str,
+    component_key: &str,
+) -> Result<(), String> {
+    db.connection()
+        .execute(
+            "DELETE FROM project_matches WHERE project_id=?1 AND component_key=?2",
+            rusqlite::params![project_id, component_key],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_project_model(id: String, app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use rusqlite::OptionalExtension;
+        let state = app.state::<Mutex<Database>>();
+        let (archive, digest) = {
+            let db = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+            let cached: Option<Vec<u8>> = db.connection().query_row("SELECT glb FROM project_models WHERE project_id=?1", [&id], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+            if let Some(bytes) = cached { return Ok(tauri::ipc::Response::new(bytes)); }
+            db.connection().query_row("SELECT a.archive,p.sha256 FROM project_packages a JOIN projects p ON p.id=a.project_id WHERE p.id=?1", [&id], |r| Ok((r.get::<_, Vec<u8>>(0)?,r.get::<_, String>(1)?))).map_err(|e| e.to_string())?
+        };
+        let bytes = crate::bom::kicad_package::export_model(&archive)?;
+        let db = state.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+        let changed = db.connection().execute("INSERT INTO project_models (project_id,glb) SELECT id,?2 FROM projects WHERE id=?1 AND sha256=?3 ON CONFLICT(project_id) DO UPDATE SET glb=excluded.glb", rusqlite::params![id, bytes, digest]).map_err(|e| e.to_string())?;
+        if changed == 0 { return Err("项目已变化，请重新打开 3D 预览".into()); }
+        Ok(tauri::ipc::Response::new(bytes))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn get_project_package(
+    id: String,
+    database: State<'_, Mutex<Database>>,
+) -> Result<Option<crate::bom::kicad_package::PackageManifest>, String> {
+    let database = database.lock().map_err(|_| "数据库锁不可用".to_owned())?;
+    crate::bom::kicad_package::manifest(&database, &id)
 }
 
 /// Reopen a project's stored analysis without touching the welding session.

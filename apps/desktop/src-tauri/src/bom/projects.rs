@@ -100,7 +100,6 @@ pub enum ProjectError {
     Missing(String),
     MissingSnapshot(String),
     InvalidSnapshot(String),
-    InUse,
     AlreadyComplete,
     SessionActive,
     TakesExist,
@@ -118,7 +117,6 @@ impl fmt::Display for ProjectError {
             Self::Missing(id) => write!(f, "project {id:?} is not available"),
             Self::MissingSnapshot(name) => write!(f, "project {name:?} has no analysis snapshot"),
             Self::InvalidSnapshot(reason) => write!(f, "project snapshot is invalid: {reason}"),
-            Self::InUse => f.write_str("project is referenced by a welding session"),
             Self::AlreadyComplete => f.write_str("project already has both sources"),
             Self::SessionActive => f.write_str("project owns the active welding session"),
             Self::TakesExist => f.write_str("project already has recorded takes"),
@@ -143,7 +141,6 @@ impl ProjectError {
                 "该项目缺少解析结果，请在「项目」页重新导入原始 BOM 文件".into()
             }
             Self::InvalidSnapshot(reason) => format!("该项目的解析结果已损坏：{reason}"),
-            Self::InUse => "该项目已有焊接会话记录，无法删除".into(),
             Self::AlreadyComplete => "该项目的交互式与表格都已导入，无需补充导入".into(),
             Self::SessionActive => "该项目正在焊接中，请先退出当前焊接再补充导入".into(),
             Self::TakesExist => "该项目已有取用记录，补充导入会改变器件归属，无法进行".into(),
@@ -393,26 +390,21 @@ pub fn apply_supplement(
     project_record(db, project_id)
 }
 
-/// Delete a project record and its cached canvas. Projects that welding sessions
-/// reference are kept so the inventory audit trail stays readable.
+/// Delete a project, its sessions and progress, and its cached canvas. Inventory
+/// movements survive with a null session reference; stock is left unchanged.
 pub fn remove_project(
     db: &Database,
     cache_dir: &Path,
     project_id: &str,
 ) -> Result<(), ProjectError> {
     let record = project_record(db, project_id)?;
-    match db
-        .connection()
-        .execute("DELETE FROM projects WHERE id = ?1", [project_id])
-    {
-        Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(error, _))
-            if error.code == rusqlite::ErrorCode::ConstraintViolation =>
-        {
-            return Err(ProjectError::InUse)
-        }
-        Err(error) => return Err(ProjectError::Database(error)),
-    }
+    let tx = db.transaction()?;
+    tx.execute(
+        "DELETE FROM welding_sessions WHERE project_id = ?1",
+        [project_id],
+    )?;
+    tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
+    tx.commit()?;
     if let Some(path) = cache_file_path(cache_dir, &record.cache_name) {
         let _ = fs::remove_file(path);
     }
@@ -442,7 +434,7 @@ fn cache_name(kind: ProjectKind, sha256: &str, source_path: &Path) -> Result<Str
                 .extension()
                 .and_then(|name| name.to_str())
                 .map(str::to_ascii_lowercase)
-                .filter(|extension| matches!(extension.as_str(), "csv" | "xls" | "xlsx"))
+                .filter(|extension| matches!(extension.as_str(), "csv" | "xls" | "xlsx" | "zip"))
                 .ok_or_else(|| {
                     ProjectError::UnsupportedSource(format!(
                         "tabular BOM needs a csv, xls or xlsx file name, got {source_path:?}"

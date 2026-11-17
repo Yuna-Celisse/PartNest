@@ -63,6 +63,63 @@ fn take(session_id: &str, part_id: &str, side: BomSide, quantity: i64) -> Confir
     take_designating(session_id, part_id, side, quantity, &["R1"])
 }
 
+#[test]
+fn deleting_a_project_preserves_stock_and_movements_and_clears_progress() {
+    let (db, session_id, part_id) = fixture();
+    let consumed = confirm_take_service(&db, take(&session_id, &part_id, BomSide::Top, 2)).unwrap();
+    let project_id: String = db
+        .connection()
+        .query_row(
+            "SELECT project_id FROM welding_sessions WHERE id = ?1",
+            [&session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let before = list_movements_service(&db).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    partnest_desktop_lib::bom::projects::remove_project(&db, cache.path(), &project_id).unwrap();
+
+    let stock: i64 = db
+        .connection()
+        .query_row(
+            "SELECT quantity FROM parts WHERE id = ?1",
+            [&part_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stock, 8);
+    let after = list_movements_service(&db).unwrap();
+    assert_eq!(before.len(), after.len());
+    let movement = after
+        .iter()
+        .find(|row| row.id == consumed.movement_id)
+        .unwrap();
+    assert_eq!(movement.delta, -2);
+    assert_eq!(movement.before_quantity, Some(10));
+    assert_eq!(movement.after_quantity, Some(8));
+    assert_eq!(movement.session_id, None);
+    assert!(!movement.reversible);
+    assert!(reverse_take_service(&db, &consumed.movement_id).is_err());
+    let remaining: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM welding_progress WHERE session_id = ?1",
+            [&session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    assert!(db
+        .connection()
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query([])
+        .unwrap()
+        .next()
+        .unwrap()
+        .is_none());
+}
+
 fn take_designating(
     session_id: &str,
     part_id: &str,

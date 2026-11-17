@@ -565,7 +565,17 @@ impl<'db> InteractiveBomCache<'db> {
             }
             // Table projects have no canvas: the analysis snapshot drives the
             // workspace and the operator picks designators from the tray.
-            ProjectKind::Tabular => (record.snapshot()?, None, Uuid::new_v4().to_string()),
+            ProjectKind::Tabular => {
+                let mut normalized = record.snapshot()?;
+                if record.original_name.to_ascii_lowercase().ends_with(".zip") {
+                    if let Some(package) = super::kicad_package::manifest(self.db, &record.id)
+                        .map_err(CacheError::TamperedCache)?
+                    {
+                        super::kicad_package::apply_positions(&mut normalized, &package.positions);
+                    }
+                }
+                (normalized, None, Uuid::new_v4().to_string())
+            }
         };
         self.record_active_session(session_id, &token, bindings(&normalized)?)?;
         Ok(CachedBomSession {

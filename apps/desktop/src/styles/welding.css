@@ -52,9 +52,11 @@
 .welding-workspace__meta span { border: 1px solid var(--border); border-radius: 999px; padding: .25rem .5rem; }
 
 .welding-bom {
+  grid-column: 1;
+  grid-row: 2;
   position: relative;
   min-width: 0;
-  min-height: 24rem;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
 }
@@ -104,6 +106,7 @@
 .welding-canvas-note strong { color: var(--text); font-size: 13px; font-weight: 600; }
 
 .welding-right {
+  grid-column: 2;
   grid-row: 2;
   display: flex;
   min-width: 0;
@@ -186,6 +189,24 @@
 @media (max-width: 900px) {
   .welding-workspace { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(20rem, 1fr) auto auto; }
   .welding-bom { grid-row: 2; }
-  .welding-right { grid-row: 3; }
+  .welding-right { grid-column: 1; grid-row: 3; }
   .component-tray { grid-row: 4; }
 }
+.kicad-3d, .kicad-3d__surface { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.kicad-3d__surface canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.kicad-3d__status { position: absolute; inset: 3rem 1rem 1rem; display: grid; place-content: center; text-align: center; pointer-events: none; color: var(--text-muted); }
+.kicad-3d__status button { pointer-events: auto; }
+.kicad-3d .welding-canvas-controls span { color: #fff; font-size: 12px; text-shadow: 0 1px 3px #000; }
+.welding-positions { border: 1px solid var(--border); padding: .5rem; }
+.welding-positions summary { cursor: pointer; margin-bottom: .5rem; }
+.welding-positions > .pn-table-wrap { max-height: 16rem; margin-top: .5rem; }
+.welding-positions .pn-data-table { min-width: 24rem; }
+.kicad-3d__selection { position: absolute; bottom: .5rem; left: .5rem; max-width: calc(100% - 1rem); padding: .35rem .5rem; color: #ffd54a; background: rgb(0 0 0 / 70%); border-radius: 3px; font-size: 12px; pointer-events: none; overflow-wrap: anywhere; }
+.welding-project-progress { margin: 0; color: var(--text-muted); font-size: 12px; }
+.component-tray__row:first-child { position: sticky; top: 0; z-index: 1; }
+.component-tray__header-cell { position: relative; padding-right: 12px; }
+.component-tray__sort { display: flex; justify-content: space-between; align-items: center; gap: .35rem; width: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.component-tray__sort:hover, .component-tray__header-cell[aria-sort="ascending"], .component-tray__header-cell[aria-sort="descending"] { color: var(--accent); }
+.component-tray__header-cell [role="separator"] { position: absolute; top: 0; bottom: 0; right: 0; width: 8px; padding: 0; z-index: 2; }
+.component-tray__header-cell [role="separator"]:hover, .component-tray__header-cell [role="separator"]:focus-visible { outline: none; background: var(--accent); }
+.component-tray__actions { display: flex; gap: .375rem; }

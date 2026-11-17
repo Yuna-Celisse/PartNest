@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: vi.fn((path: string) => `asset://localhost/${encodeURIComponent(path)}`),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn() }));
+vi.mock("./Kicad3DViewer", () => ({ default: ({ designators, onSelectDesignators, side, viewRevision }: { designators: string[]; onSelectDesignators?: (refs: string[]) => void; side: string; viewRevision: number; onSideChange?: (side: "top" | "bottom") => void }) => <div aria-label="KiCad PCB 3D 预览" data-selected={designators.join(",")} data-side={side} data-view-revision={viewRevision}><button onClick={() => onSelectDesignators?.(["R1"])}>3D 选择 R1</button></div> }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -62,6 +63,57 @@ function selectInBom(designators: string[], source?: MessageEventSource | null) 
 }
 
 describe("WeldingPage", () => {
+  it("orients 3D to the picked row's side even when that row is picked repeatedly", async () => {
+    const board = { ...tabularSession, original_name: "board.zip", normalized: { ...tabularSession.normalized, groups: [{ ...tabularSession.normalized.groups[0], placements: ["R1", "R2"].map((designator) => ({ designator, side: "bottom", component_key: "C1" })) }] } };
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue(board), getProjectModel: vi.fn(), resolveBomSelection: vi.fn().mockResolvedValue({ session_id: "session-2", component_key: "C1", side: "bottom", designators: ["R1", "R2"] }) });
+    render(<WeldingPage api={api} />);
+    const viewer = await screen.findByLabelText("KiCad PCB 3D 预览");
+    fireEvent.click(screen.getByTestId("tray-row-C1"));
+    await waitFor(() => expect(viewer).toHaveAttribute("data-side", "bottom"));
+    expect(viewer).toHaveAttribute("data-view-revision", "1");
+    fireEvent.click(screen.getByTestId("tray-row-C1"));
+    await waitFor(() => expect(viewer).toHaveAttribute("data-view-revision", "2"));
+    fireEvent.click(screen.getByRole("tab", { name: "顶层" }));
+    expect(viewer).toHaveAttribute("data-side", "top");
+    fireEvent.click(screen.getByRole("tab", { name: "底层" }));
+    expect(viewer).toHaveAttribute("data-side", "bottom");
+    expect(screen.queryByRole("button", { name: "翻转 PCB" })).not.toBeInTheDocument();
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
+
+  it("routes 3D picks through host validation and expands the component list", async () => {
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue({ ...tabularSession, original_name: "board.zip" }), getProjectModel: vi.fn() });
+    render(<WeldingPage api={api} />);
+    await screen.findByLabelText("KiCad PCB 3D 预览");
+    fireEvent.click(screen.getByRole("button", { name: "收起器件列表" }));
+    expect(screen.queryByTestId("tray-row-C1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "3D 选择 R1" }));
+    await waitFor(() => expect(api.resolveBomSelection).toHaveBeenCalledWith("token-1", ["R1"]));
+    expect(await screen.findByTestId("tray-row-C1")).toHaveAttribute("data-active", "true");
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
+  it("uses the persisted manually matched stock part without taking stock automatically", async () => {
+    const api = makeApi({ getProjectMatches: vi.fn().mockResolvedValue({ C1: { part_id: "manual-stock", manual: true } }), listParts: vi.fn().mockResolvedValue([part({ id: "manual-stock", name: "Manually chosen", lcsc_code: "C999", mpn: "OTHER" })]) });
+    render(<WeldingPage api={api} />);
+    await screen.findByTitle("交互式 BOM");
+    await waitFor(() => expect(api.getProjectMatches).toHaveBeenCalledWith("p-1"));
+    selectInBom(["R1"]);
+    expect(await screen.findByText("手动匹配")).toBeVisible();
+    expect(screen.getByLabelText("选择器件")).toHaveValue("manual-stock");
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
+
+  it("places KiCad 3D and selectable coordinates in the welding workspace", async () => {
+    const api = makeApi({ restoreActiveWeldingSession: vi.fn().mockResolvedValue({ ...tabularSession, original_name: "board.zip" }), getProjectModel: vi.fn(), getProjectPackage: vi.fn().mockResolvedValue({ files: [], bom_source: "BOM.csv", warnings: [], front_svg: null, back_svg: null, positions: [{ reference: "R1", value: "10k", package: "0603", x_mm: 12, y_mm: 20, rotation: 90, side: "top" }] }) });
+    render(<WeldingPage api={api} />);
+    expect(await screen.findByLabelText("KiCad PCB 3D 预览")).toBeVisible();
+    const coordinates = await screen.findByText("器件位置 · 1 个");
+    fireEvent.click(coordinates);
+    fireEvent.click(screen.getByRole("button", { name: "R1" }));
+    await waitFor(() => expect(api.resolveBomSelection).toHaveBeenCalledWith("token-1", ["R1"]));
+    await waitFor(() => expect(screen.getByLabelText("KiCad PCB 3D 预览")).toHaveAttribute("data-selected", "R1,R2"));
+    expect(api.confirmTake).not.toHaveBeenCalled();
+  });
   it("shows a visible restore error and retries loading the workspace", async () => {
     const restore = vi.fn()
       .mockRejectedValueOnce(new Error("缓存 BOM 已损坏"))
@@ -168,14 +220,27 @@ describe("WeldingPage", () => {
 
   it("shows the project context and side progress summary", async () => {
     const api = makeApi({
-      getWeldingProgress: vi.fn().mockResolvedValue([{ session_id: "session-1", component_key: "C1", side: "top", part_id: "part-1", required_quantity: 2, consumed_quantity: 1, taken_quantity: 1, status: "partial" }]),
+      getWeldingProgress: vi.fn().mockResolvedValue([{ session_id: "session-1", component_key: "C1", side: "top", part_id: "part-1", required_quantity: 2, consumed_quantity: 1, taken_quantity: 1, status: "partial", confirmed_designators: ["R1"] }]),
     });
     render(<WeldingPage api={api} />);
     await screen.findByTitle("交互式 BOM");
     expect(screen.getByRole("heading", { name: "主板" })).toBeVisible();
     expect(screen.getByText("board.html")).toBeVisible();
+    const summary = screen.getByLabelText("焊接进度");
+    await waitFor(() => expect(within(summary).getByText("1/2")).toBeVisible());
+    expect(within(summary).getByText("0/1")).toBeVisible();
+    expect(screen.getByText("项目取用进度：1/3 个位号")).toBeVisible();
     selectInBom(["R1", "R2"]);
     expect(await screen.findByText("顶层 · 部分取用")).toBeVisible();
+    expect(within(summary).getByText("1/2")).toBeVisible();
+  });
+
+  it("keeps tray columns flexible and shows total quantity on the all-sides tab", async () => {
+    render(<WeldingPage api={makeApi()} />);
+    const row = await screen.findByTestId("tray-row-C1");
+    expect(within(row).getAllByRole("cell")[0]).toHaveStyle({ flexGrow: "180" });
+    fireEvent.click(screen.getByRole("tab", { name: "全部" }));
+    expect(within(row).getAllByRole("cell")[2]).toHaveTextContent("3");
   });
 
   it("shows the full BOM in a collapsible tray and highlights the active group", async () => {

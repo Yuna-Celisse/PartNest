@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::Builder;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 pub const MAX_BACKUPS: usize = 10;
 pub const STARTUP_BACKUP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -252,6 +252,23 @@ fn validate_schema(connection: &Connection) -> Result<i64, BackupError> {
         "welding_sessions",
         &["id", "project_id", "status", "created_at", "updated_at"],
     )?;
+    if schema_version >= 14 {
+        require_table(
+            connection,
+            "project_packages",
+            &["project_id", "archive", "manifest_json"],
+        )?;
+    }
+    if schema_version >= 15 {
+        require_table(connection, "project_models", &["project_id", "glb"])?;
+    }
+    if schema_version >= 16 {
+        require_table(
+            connection,
+            "project_matches",
+            &["project_id", "component_key", "part_id", "manual"],
+        )?;
+    }
     if schema_version >= 13 {
         require_table(
             connection,

@@ -7,3 +7,4 @@ pub mod types;
 
 pub mod assets;
 pub mod imports;
+pub mod kicad_package;

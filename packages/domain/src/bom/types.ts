@@ -30,9 +30,10 @@ export interface InventoryPart {
   mpn: string;
   lcscCode: string;
   value?: string;
+  category?: string;
 }
 
 export type MatchResult =
   | { kind: "exact-lcsc" | "exact-mpn"; partId: string }
-  | { kind: "candidate"; partIds: string[] }
+  | { kind: "candidate"; partIds: string[]; reasons?: Record<string, string[]> }
   | { kind: "none" };

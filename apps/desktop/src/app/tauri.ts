@@ -45,6 +45,11 @@ export type DesktopApi = {
   /** Reopen the project session the database still considers active. */
   restoreActiveWeldingSession: () => Promise<CachedBomSession | null>;
   listProjects: () => Promise<ProjectSummary[]>;
+  getProjectPackage: (id: string) => Promise<import("./contracts").ProjectPackage | null>;
+  getProjectModel: (id: string) => Promise<ArrayBuffer>;
+  getProjectMatches: (projectId: string) => Promise<import("./contracts").ProjectMatches>;
+  setProjectMatch: (projectId: string, componentKey: string, partId: string, manual: boolean) => Promise<void>;
+  deleteProjectMatch: (projectId: string, componentKey: string) => Promise<void>;
   /** Import a BOM file (interactive HTML, CSV or XLSX) as a project. */
   importProject: (input: { source_path: string; name?: string | null; mapping?: Record<string, string>; companion_path?: string | null }) => Promise<ImportedProject>;
   /** Merge the source a project is still missing (its table, or its canvas). */
@@ -84,6 +89,11 @@ export const desktopApi: DesktopApi = {
   lookupLcsc: (lcscCode) => invoke("lookup_lcsc", { lcscCode }),
   restoreActiveWeldingSession: () => invoke("restore_active_welding_session"),
   listProjects: () => invoke("list_projects"),
+  getProjectPackage: (id) => invoke("get_project_package", { id }),
+  getProjectModel: (id) => invoke("get_project_model", { id }),
+  getProjectMatches: (projectId) => invoke("get_project_matches", { projectId }),
+  setProjectMatch: (projectId, componentKey, partId, manual) => invoke("set_project_match", { projectId, componentKey, partId, manual }),
+  deleteProjectMatch: (projectId, componentKey) => invoke("delete_project_match", { projectId, componentKey }),
   importProject: (input) => invoke("import_project", { input }),
   supplementProject: (input) => invoke("supplement_project", { input }),
   analyzeProject: async (id) => previewFromWire(await invoke<ImportPreviewWire>("analyze_project", { id })),

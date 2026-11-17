@@ -8,8 +8,14 @@ import { usePageActions } from "../../app/AppShell";
 import { PartDrawer } from "./PartDrawer";
 
 const blankPart: PartInput = { name: "", category: "", package: "", manufacturer: "", mpn: "", lcsc_code: "", quantity: 0, box_id: null, slot: null, note: "" };
+const adjustmentReasons = {
+  increase: ["采购入库", "退料入库", "盘盈入库", "其他入库"],
+  decrease: ["领用出库", "损坏报废", "退货出库", "盘亏出库", "其他出库"],
+};
 type InventoryApi = Pick<DesktopApi, "listParts" | "createPart" | "updatePart" | "adjustStock"> & Partial<Pick<DesktopApi, "deletePart" | "listBoxes" | "lookupLcsc">>;
 const toInput = (part: Part): PartInput => ({ ...part, category: part.category ?? "", package: part.package ?? "", manufacturer: part.manufacturer ?? "", mpn: part.mpn ?? "", lcsc_code: part.lcsc_code ?? "", note: part.note ?? "" });
+const inventoryCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+const partSpec = (part: Part) => [part.category, part.package, part.mpn].filter(Boolean).join(" · ");
 
 export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX.Element {
   const [parts, setParts] = useState<Part[]>([]);
@@ -23,7 +29,11 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   const [adjustmentMode, setAdjustmentMode] = useState<"increase" | "decrease">("increase");
   const [adjustmentQuantity, setAdjustmentQuantity] = useState("1");
   const [adjustmentReason, setAdjustmentReason] = useState("采购入库");
-  const [morePartId, setMorePartId] = useState<string | null>(null);
+  function changeAdjustmentMode(mode: "increase" | "decrease") {
+    if (mode === adjustmentMode) return;
+    setAdjustmentMode(mode);
+    setAdjustmentReason(adjustmentReasons[mode][0]);
+  }
   const [error, setError] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const [quantityText, setQuantityText] = useState("0");
@@ -62,6 +72,7 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
   }
   async function adjust() {
     if (!adjusting || !/^\d+$/.test(adjustmentQuantity) || Number(adjustmentQuantity) <= 0) { setError("数量必须是大于 0 的整数"); return; }
+    if (!adjustmentReasons[adjustmentMode].includes(adjustmentReason)) { setError("请选择当前操作对应的原因"); return; }
     const delta = (adjustmentMode === "increase" ? 1 : -1) * Number(adjustmentQuantity);
     setError("");
     try {
@@ -100,17 +111,17 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
     } catch (cause) { setError(errorMessage(cause)); }
   }
   const columns = useMemo<DataColumn<Part>[]>(() => [
-    { id: "name", header: "名称", width: 190, cell: (part) => part.name },
-    { id: "spec", header: "规格", width: 220, cell: (part) => [part.category, part.package, part.mpn].filter(Boolean).join(" · ") || "—" },
-    { id: "lcsc", header: "LCSC ID", width: 110, cell: (part) => part.lcsc_code || "—" },
-    { id: "box", header: "盒位", width: 150, cell: (part) => `${part.box_id === null ? "未分配" : (boxNames.get(part.box_id) || `盒子 #${part.box_id}`)}${part.slot ? ` / ${part.slot}` : ""}` },
-    { id: "quantity", header: "库存", width: 70, cell: (part) => part.quantity },
+    { id: "name", header: "名称", width: 190, cell: (part) => part.name, compare: (a, b) => inventoryCollator.compare(a.name, b.name) },
+    { id: "spec", header: "规格", width: 220, cell: (part) => partSpec(part) || "—", compare: (a, b) => inventoryCollator.compare(partSpec(a), partSpec(b)) },
+    { id: "lcsc", header: "LCSC ID", width: 110, cell: (part) => part.lcsc_code || "—", compare: (a, b) => inventoryCollator.compare(a.lcsc_code ?? "", b.lcsc_code ?? "") },
+    { id: "box", header: "盒位", width: 150, cell: (part) => `${part.box_id === null ? "未分配" : (boxNames.get(part.box_id) || `盒子 #${part.box_id}`)}${part.slot ? ` / ${part.slot}` : ""}`, compare: (a, b) => inventoryCollator.compare(a.box_id === null ? "未分配" : (boxNames.get(a.box_id) || `盒子 #${a.box_id}`), b.box_id === null ? "未分配" : (boxNames.get(b.box_id) || `盒子 #${b.box_id}`)) || inventoryCollator.compare(a.slot ?? "", b.slot ?? "") },
+    { id: "quantity", header: "库存", width: 70, cell: (part) => part.quantity, compare: (a, b) => a.quantity - b.quantity },
     { id: "actions", header: "操作", width: 250, cell: (part) => <div className="inventory-actions">
       <button className="pn-button pn-button--ghost" type="button" onClick={() => openEdit(part)}>编辑资料</button>
-      <button className="pn-button pn-button--secondary" type="button" onClick={() => { setAdjusting(part); setAdjustmentQuantity("1"); setAdjustmentMode("increase"); setAdjustmentReason("采购入库"); setMorePartId(null); }}>调整库存</button>
-      {api.deletePart && <div className="inventory-more"><button className="pn-button pn-button--ghost" type="button" aria-label={`${part.name}更多操作`} aria-expanded={morePartId === part.id} onClick={() => setMorePartId((current) => current === part.id ? null : part.id)}>更多 ⋮</button>{morePartId === part.id && <div className="inventory-more__menu" role="menu"><button type="button" role="menuitem" onClick={() => { setMorePartId(null); openEdit(part); }}>编辑资料</button><button type="button" role="menuitem" onClick={() => { setMorePartId(null); setAdjusting(part); }}>调整库存</button><button type="button" role="menuitem" className="inventory-more__danger" onClick={() => { setMorePartId(null); void remove(part); }}>删除器件</button></div>}</div>}
+      <button className="pn-button pn-button--secondary" type="button" onClick={() => { setAdjusting(part); setAdjustmentQuantity("1"); setAdjustmentMode("increase"); setAdjustmentReason("采购入库"); }}>调整库存</button>
+      {api.deletePart && <button className="pn-button pn-button--ghost inventory-delete" type="button" onClick={() => void remove(part)}>删除</button>}
     </div> },
-  ], [api.deletePart, boxNames, morePartId]);
+  ], [api.deletePart, boxNames]);
   const toolbarActions = useMemo(() => <><input className="pn-control" aria-label="搜索库存" placeholder="名称、MPN 或 LCSC" value={search} onChange={(event) => setSearch(event.target.value)} /><button className="pn-button pn-button--primary" type="button" onClick={openCreate}>新增器件</button></>, [search, drawerOpen]);
   const inShell = usePageActions(toolbarActions);
   return <section className="inventory-page inventory-page--workspace" aria-label="库存管理">
@@ -122,9 +133,9 @@ export function InventoryPage({ api = desktopApi }: { api?: InventoryApi }): JSX
     <Dialog open={Boolean(adjusting)} title="调整库存" onRequestClose={() => setAdjusting(null)}>
       {adjusting && <form className="pn-dialog-form" onSubmit={(event) => { event.preventDefault(); void adjust(); }}>
         <p className="inventory-adjust-summary"><strong>器件：</strong>{adjusting.name}<br /><strong>当前库存：</strong>{adjusting.quantity}</p>
-        <FormField label="操作方式" htmlFor="adjustment-mode"><div className="inventory-adjust-modes"><button type="button" className={`pn-button ${adjustmentMode === "increase" ? "pn-button--primary" : "pn-button--secondary"}`} onClick={() => setAdjustmentMode("increase")}>增加库存</button><button type="button" className={`pn-button ${adjustmentMode === "decrease" ? "pn-button--primary" : "pn-button--secondary"}`} onClick={() => setAdjustmentMode("decrease")}>减少库存</button></div></FormField>
+        <FormField label="操作方式" htmlFor="adjustment-mode"><div className="inventory-adjust-modes"><button type="button" className={`pn-button ${adjustmentMode === "increase" ? "pn-button--primary" : "pn-button--secondary"}`} onClick={() => changeAdjustmentMode("increase")}>增加库存</button><button type="button" className={`pn-button ${adjustmentMode === "decrease" ? "pn-button--primary" : "pn-button--secondary"}`} onClick={() => changeAdjustmentMode("decrease")}>减少库存</button></div></FormField>
         <FormField label="数量" htmlFor="adjustment-quantity"><input id="adjustment-quantity" className="pn-control" type="number" min="1" step="1" value={adjustmentQuantity} onChange={(event) => setAdjustmentQuantity(event.target.value)} /></FormField>
-        <FormField label="原因" htmlFor="adjustment-reason"><select id="adjustment-reason" className="pn-control" value={adjustmentReason} onChange={(event) => setAdjustmentReason(event.target.value)}><option>采购入库</option><option>盘点修正</option><option>损坏报废</option><option>手工调整</option></select></FormField>
+        <FormField label="原因" htmlFor="adjustment-reason"><select id="adjustment-reason" className="pn-control" value={adjustmentReason} onChange={(event) => setAdjustmentReason(event.target.value)}>{adjustmentReasons[adjustmentMode].map((reason) => <option key={reason}>{reason}</option>)}</select></FormField>
         <p className="inventory-adjust-result">调整后库存：<strong>{adjusting.quantity + (adjustmentMode === "increase" ? 1 : -1) * (Number(adjustmentQuantity) || 0)}</strong></p>
         {error && <p className="pn-inline-error" role="alert">{error}</p>}
         <div className="pn-form-actions"><button className="pn-button pn-button--ghost" type="button" onClick={() => setAdjusting(null)}>取消</button><button className="pn-button pn-button--primary" type="submit">确认调整</button></div>

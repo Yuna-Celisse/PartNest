@@ -590,5 +590,5 @@ fn restores_version_12_backup_without_modifying_the_selected_file() {
     restore_database_file(&mut live, &old_path).unwrap();
     assert_eq!(fs::read(&old_path).unwrap(), original);
     assert_eq!(count(live.path(), "boxes"), 1);
-    assert_eq!(validate_backup(live.path()).unwrap().schema_version, 13);
+    assert_eq!(validate_backup(live.path()).unwrap().schema_version, 16);
 }

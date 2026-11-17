@@ -2,14 +2,16 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Dialog } from "../../components/ui/Overlay";
 
-export type ProjectImportSource = "interactive" | "tabular";
+export type ProjectImportSource = "interactive" | "tabular" | "kicad";
 
 const extensions: Record<ProjectImportSource, string[]> = {
   interactive: ["html"],
   tabular: ["csv", "xls", "xlsx"],
+  kicad: ["zip"],
 };
 
 const sources: { value: ProjectImportSource; label: string; hint: string }[] = [
+  { value: "kicad", label: "KiCad 工程包（ZIP）", hint: "提取 BOM、工程文件清单、PCB 预览与器件坐标；预览和坐标需要本机安装 KiCad" },
   { value: "interactive", label: "可交互式 BOM（HTML）", hint: "EasyEDA 导出的 HTML，带 3D 板位与顶/底层信息" },
   { value: "tabular", label: "普通 BOM 表（CSV / XLS / XLSX）", hint: "器件清单表格，按列解析位号与数量；与交互式一起选择时作为它的配套表格" },
 ];
@@ -39,13 +41,14 @@ export function ImportProjectDialog({ supplement, pickFile, onCancel, onConfirm 
   supplement?: { kind: ProjectImportSource; projectName: string };
   pickFile: (source: ProjectImportSource) => Promise<string | null>;
   onCancel: () => void;
-  onConfirm: (files: { interactivePath?: string; tablePath?: string }) => void;
+  onConfirm: (files: { interactivePath?: string; tablePath?: string; archivePath?: string }) => void;
 }) {
   const [files, setFiles] = useState<Partial<Record<ProjectImportSource, string>>>({});
   const options = supplement ? sources.filter((entry) => entry.value === supplement.kind) : sources;
   const mismatched = options.filter(({ value }) => isMisfiled(files[value], value));
   const chosen = options.filter(({ value }) => Boolean(files[value]));
-  const canSubmit = chosen.length > 0 && mismatched.length === 0;
+  const mixedArchive = Boolean(files.kicad && (files.interactive || files.tabular));
+  const canSubmit = chosen.length > 0 && mismatched.length === 0 && !mixedArchive;
 
   function pick(source: ProjectImportSource) {
     void pickFile(source).then((selected) => {
@@ -56,12 +59,13 @@ export function ImportProjectDialog({ supplement, pickFile, onCancel, onConfirm 
   function confirm() {
     const interactivePath = files.interactive;
     const tablePath = files.tabular;
-    onConfirm({ ...(interactivePath ? { interactivePath } : {}), ...(tablePath ? { tablePath } : {}) });
+    onConfirm({ ...(interactivePath ? { interactivePath } : {}), ...(tablePath ? { tablePath } : {}), ...(files.kicad ? { archivePath: files.kicad } : {}) });
   }
 
   return <Dialog open title={supplement ? "补充导入" : "导入项目"} onRequestClose={onCancel}>
     <div className="project-import-form">
       {supplement && <p className="project-import-note">为项目「{supplement.projectName}」补充缺失的来源；另一种来源保持不变。</p>}
+      {mixedArchive && <p className="pn-inline-error" role="alert">KiCad 工程包请单独导入，清除其他来源后再创建项目。</p>}
       {options.map((entry) => {
         const path = files[entry.value];
         const wrong = isMisfiled(path, entry.value);

@@ -22,10 +22,10 @@ const kindLabel: Record<ProjectSummary["kind"], string> = {
 /** Which source the project still owes: a table for a bare export, a canvas for
  *  a table-only project, or nothing once both are present. */
 const missingSource = (project: ProjectSummary): ProjectImportSource | null =>
-  project.kind === "interactive" ? (project.has_table ? null : "tabular") : "interactive";
+  project.original_name.toLowerCase().endsWith(".zip") ? null : project.kind === "interactive" ? (project.has_table ? null : "tabular") : "interactive";
 
 const sourcesLabel = (project: ProjectSummary): string =>
-  project.kind === "interactive" && project.has_table ? "交互式 + 表格" : kindLabel[project.kind];
+  project.original_name.toLowerCase().endsWith(".zip") ? "KiCad 工程包" : project.kind === "interactive" && project.has_table ? "交互式 + 表格" : kindLabel[project.kind];
 
 export function ProjectsPage({ api, pickFile, navigate }: { api?: ProjectImportApi; pickFile?: (source: ProjectImportSource) => Promise<string | null>; navigate?: (path: string) => void }) {
   const state = useProjectImport({ api });
@@ -66,7 +66,7 @@ export function ProjectsPage({ api, pickFile, navigate }: { api?: ProjectImportA
     setMenu(null);
     setListError("");
     // Destructive actions use the async dialog plugin, not window.confirm.
-    const accepted = await confirmDialog(`删除项目“${project.name}”？该项目的解析结果与缓存画布都会被移除；已有焊接会话记录的项目无法删除。`, { title: "删除项目", kind: "warning", okLabel: "删除", cancelLabel: "取消" });
+    const accepted = await confirmDialog(`删除项目“${project.name}”？该项目的解析结果、缓存画布、焊接会话与进度都会被移除。库存数量与流水记录会保留，但关联取用流水将无法撤销。`, { title: "删除项目", kind: "warning", okLabel: "删除", cancelLabel: "取消" });
     if (!accepted) return;
     try { await removeProject(project.id); }
     catch (cause) { setListError(errorMessage(cause)); return; }
@@ -148,7 +148,7 @@ export function ProjectsPage({ api, pickFile, navigate }: { api?: ProjectImportA
         <div data-tone={summary.shortages > 0 ? "danger" : "success"}><span>缺料组</span><strong>{summary.shortages} 个缺料组</strong></div>
         <div data-tone={summary.unmatched > 0 ? "warning" : "success"}><span>未匹配组</span><strong>{summary.unmatched} 个未匹配组</strong></div>
       </section>
-      <BomAnalysisTable rows={state.rows} onConfirmMatch={state.confirmMatch} />
+      <BomAnalysisTable rows={state.rows} inventory={state.parts} onConfirmMatch={state.confirmMatch} onUndoMatch={state.undoMatch} />
     </>}
     </div>
     {menu && <div
@@ -168,7 +168,7 @@ export function ProjectsPage({ api, pickFile, navigate }: { api?: ProjectImportA
       onCancel={() => setImporting(null)}
       onConfirm={(picked) => {
         const target = importing.project;
-        const source = picked.interactivePath ?? picked.tablePath;
+        const source = picked.archivePath ?? picked.interactivePath ?? picked.tablePath;
         setImporting(null);
         if (!source) return;
         void (target && importing.source

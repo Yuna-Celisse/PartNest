@@ -25,6 +25,7 @@ tempfile = "3.23.0"
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.7.0"
 uuid = { version = "1.24.1", features = ["v4", "v7"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 # 发布构建：收敛为单一代码生成单元并开启薄 LTO，兼顾体积与速度；

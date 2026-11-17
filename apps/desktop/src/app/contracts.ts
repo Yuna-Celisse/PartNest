@@ -75,6 +75,15 @@ export type ImportedProject = {
   normalized: NormalizedBom;
 };
 export type ProjectSummary = { id: string; name: string; original_name: string; kind: ProjectKind; has_table: boolean; created_at: string; active: boolean };
+export type ProjectMatches = Record<string, { part_id: string; manual: boolean }>;
+export type ProjectPackage = {
+  files: { path: string; kind: string; size: number }[];
+  bom_source: string;
+  warnings: string[];
+  front_svg: string | null;
+  back_svg: string | null;
+  positions: { reference: string; value: string; package: string; x_mm: number; y_mm: number; rotation: number; side: string }[];
+};
 export type ResolvedBomSelection = {
   session_id: string;
   component_key: string;

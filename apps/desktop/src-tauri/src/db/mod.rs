@@ -87,6 +87,18 @@ pub fn migrations() -> Vec<Migration<'static>> {
             version: 13,
             sql: include_str!("../../migrations/0013_project_assets.sql"),
         },
+        Migration {
+            version: 14,
+            sql: include_str!("../../migrations/0014_project_packages.sql"),
+        },
+        Migration {
+            version: 15,
+            sql: include_str!("../../migrations/0015_project_models.sql"),
+        },
+        Migration {
+            version: 16,
+            sql: include_str!("../../migrations/0016_project_matches.sql"),
+        },
     ]
 }
 

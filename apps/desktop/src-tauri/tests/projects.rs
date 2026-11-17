@@ -149,7 +149,7 @@ fn an_imported_interactive_project_keeps_its_name_and_snapshot() {
 }
 
 #[test]
-fn removing_a_project_keeps_session_rows_and_deletes_the_rest() {
+fn removing_a_project_deletes_all_sessions_and_its_canvas() {
     let root = tempdir().unwrap();
     let db = Database::open(root.path().join("partnest.db")).unwrap();
     let cache_dir = root.path().join("cache");
@@ -160,26 +160,58 @@ fn removing_a_project_keeps_session_rows_and_deletes_the_rest() {
     let canvas = cache_dir.join(&session.cache_name);
     assert!(canvas.is_file());
 
-    let refused = remove_project(&db, &cache_dir, &imported.project_id)
-        .expect_err("a project used by a welding session must survive");
-    assert!(refused.to_string().contains("welding session"));
-    assert_eq!(refused.user_message(), "该项目已有焊接会话记录，无法删除");
-    assert_eq!(stored_rows(&db).len(), 1);
-    assert!(canvas.is_file());
-
-    db.connection()
-        .execute(
-            "DELETE FROM welding_sessions WHERE project_id = ?1",
-            [&session.project_id],
-        )
-        .unwrap();
+    for status in ["completed", "cancelled"] {
+        db.connection()
+            .execute(
+                "INSERT INTO welding_sessions (id, project_id, status) VALUES (?1, ?2, ?1)",
+                rusqlite::params![status, imported.project_id],
+            )
+            .unwrap();
+    }
     remove_project(&db, &cache_dir, &imported.project_id).unwrap();
     assert!(stored_rows(&db).is_empty());
+    let sessions: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM welding_sessions WHERE project_id = ?1",
+            [&imported.project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sessions, 0);
     assert!(!canvas.exists());
     assert!(
         remove_project(&db, &cache_dir, &imported.project_id).is_err(),
         "removing a missing project reports an error"
     );
+}
+
+#[test]
+fn failed_project_deletion_rolls_back_session_cleanup_and_keeps_canvas() {
+    let root = tempdir().unwrap();
+    let db = Database::open(root.path().join("partnest.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let cache = InteractiveBomCache::new(&db, &cache_dir);
+    let imported = cache
+        .import_project(&fixture("interactive-minimal.html"), None, None, None)
+        .unwrap();
+    let session = cache.open_project_welding(&imported.project_id).unwrap();
+    db.connection().execute_batch(
+        "CREATE TRIGGER refuse_project_delete BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'blocked'); END;"
+    ).unwrap();
+
+    assert!(remove_project(&db, &cache_dir, &imported.project_id).is_err());
+    assert!(project_record(&db, &imported.project_id).is_ok());
+    let status: String = db
+        .connection()
+        .query_row(
+            "SELECT status FROM welding_sessions WHERE id = ?1",
+            [&session.session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "active");
+    assert!(cache_dir.join(&session.cache_name).is_file());
 }
 
 #[test]

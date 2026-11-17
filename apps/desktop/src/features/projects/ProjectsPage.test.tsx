@@ -44,6 +44,7 @@ const imported = (overrides: Partial<ImportedProject> = {}): ImportedProject => 
 // The label also carries its hint text, so match the option by its title.
 // Each slot is named by its source; keep these in step with the dialog.
 const slotLabel: Record<ProjectImportSource, string> = {
+  kicad: "KiCad 工程包（ZIP）",
   interactive: "可交互式 BOM（HTML）",
   tabular: "普通 BOM 表（CSV / XLS / XLSX）",
 };
@@ -95,6 +96,64 @@ function buttonIn(root: HTMLElement, label: string) {
 }
 
 describe("ProjectsPage", () => {
+  it("resizes analysis columns and saves manual matches for unmatched components across reopening", async () => {
+    const bom = { ...ready.bom, groups: [{ ...ready.bom.groups[0], component_key: "unknown", name: "MCU", mpn: "NOT-IN-STOCK", lcsc_code: "", quantity: 5 }] };
+    const setProjectMatch = vi.fn().mockResolvedValue(undefined);
+    const deleteProjectMatch = vi.fn().mockResolvedValue(undefined);
+    const getProjectMatches = vi.fn().mockResolvedValueOnce({}).mockResolvedValue({ unknown: { part_id: "part-1", manual: true } });
+    const testApi = api({ importProject: vi.fn().mockResolvedValue(imported({ normalized: bom })), listProjects: vi.fn().mockResolvedValue([project]), analyzeProject: vi.fn().mockResolvedValue({ kind: "Ready", bom }), setProjectMatch, getProjectMatches, deleteProjectMatch });
+    renderPage(<ProjectsPage api={testApi} pickFile={vi.fn().mockResolvedValue("bom.csv")} />);
+    await importFile("bom.csv", "tabular");
+    expect(await screen.findByText("未匹配")).toBeVisible();
+    const resize = screen.getByRole("separator", { name: "调整封装列宽" });
+    fireEvent.mouseDown(resize, { clientX: 100 });
+    fireEvent.mouseMove(document, { clientX: 180 });
+    fireEvent.mouseUp(document);
+    expect(resize).toHaveAttribute("aria-valuenow", "180");
+    fireEvent.keyDown(resize, { key: "ArrowRight" });
+    expect(resize).toHaveAttribute("aria-valuenow", "196");
+    expect(screen.getByRole("table", { name: "BOM 分析表" }).querySelectorAll("col")[1]).toHaveStyle({ width: "196px" });
+    fireEvent.click(screen.getByRole("button", { name: "手动匹配" }));
+    const dialog = await screen.findByRole("dialog", { name: "手动匹配库存器件" });
+    fireEvent.change(within(dialog).getByLabelText("搜索匹配库存"), { target: { value: "C1" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /10k/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存手动匹配" }));
+    await waitFor(() => expect(setProjectMatch).toHaveBeenCalledWith("p-1", "unknown", "part-1", true));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("手动匹配", { selector: ".pn-status-badge" })).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: /板 A.*board.csv/ }));
+    await waitFor(() => expect(getProjectMatches).toHaveBeenCalledWith("p-1"));
+    expect(await screen.findByText("手动匹配", { selector: ".pn-status-badge" })).toBeVisible();
+    deleteProjectMatch.mockRejectedValueOnce(new Error("撤销失败"));
+    fireEvent.click(screen.getByRole("button", { name: "撤销匹配" }));
+    expect(await screen.findByText("撤销失败")).toBeVisible();
+    expect(screen.getByText("手动匹配", { selector: ".pn-status-badge" })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "撤销匹配" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "撤销匹配" }));
+    await waitFor(() => expect(deleteProjectMatch).toHaveBeenCalledWith("p-1", "unknown"));
+    expect(await screen.findByText("未匹配")).toBeVisible();
+    expect(screen.queryByText("手动匹配", { selector: ".pn-status-badge" })).not.toBeInTheDocument();
+    getProjectMatches.mockResolvedValue({});
+    fireEvent.click(screen.getByRole("button", { name: /板 A.*board.csv/ }));
+    expect(await screen.findByText("未匹配")).toBeVisible();
+
+  });
+
+  it("imports a KiCad archive without routing it through the standalone BOM parsers", async () => {
+    const importedProject = imported({ original_name: "board.zip" });
+    const testApi = api({ importProject: vi.fn().mockResolvedValue(importedProject), getProjectPackage: vi.fn().mockResolvedValue({ files: [{ path: "board.kicad_pcb", kind: "PCB", size: 100 }], bom_source: "BOM.csv", warnings: [], front_svg: "<svg></svg>", back_svg: null, positions: [] }) });
+    renderPage(<ProjectsPage api={testApi} pickFile={vi.fn().mockResolvedValue("C:/board.zip")} />);
+    await importFiles({ kicad: "C:/board.zip" });
+    await waitFor(() => expect(testApi.importProject).toHaveBeenCalledWith({ source_path: "C:/board.zip" }));
+    expect(testApi.inspectTabularBom).not.toHaveBeenCalled();
+    expect(testApi.previewInteractiveBom).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "缺料分析" })).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "工程资料" })).not.toBeInTheDocument();
+    expect(testApi.getProjectPackage).not.toHaveBeenCalled();
+    expect(screen.queryByAltText("PCB 顶层预览")).not.toBeInTheDocument();
+
+  });
+
   it("gives an unloaded project workspace a compact empty state", () => {
     renderPage(<ProjectsPage api={api()} />);
     const workspace = screen.getByRole("region", { name: "项目工作区" });
@@ -224,6 +283,7 @@ describe("ProjectsPage", () => {
 
     await waitFor(() => expect(removeProject).toHaveBeenCalledWith("p-1"));
     expect(confirmDialog).toHaveBeenCalledTimes(1);
+    expect(confirmDialog).toHaveBeenCalledWith(expect.stringContaining("焊接会话与进度都会被移除"), expect.any(Object));
     await waitFor(() => expect(screen.queryByRole("button", { name: /板 A/ })).not.toBeInTheDocument());
     expect(screen.getByText(/暂无项目/)).toBeInTheDocument();
   });
@@ -244,7 +304,7 @@ describe("ProjectsPage", () => {
 
   it("reports a deletion the database refuses", async () => {
     const listProjects = vi.fn().mockResolvedValue([project]);
-    const removeProject = vi.fn().mockRejectedValue(new Error("该项目已有焊接会话记录，无法删除"));
+    const removeProject = vi.fn().mockRejectedValue(new Error("项目保存失败：数据库无法删除记录"));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     renderPage(<ProjectsPage api={api({ listProjects, removeProject })} />);
 
@@ -401,8 +461,11 @@ describe("ProjectsPage", () => {
     expect(await screen.findByText("候选匹配")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "确认匹配" })[0]);
     await waitFor(() => expect(screen.queryByText("候选匹配")).not.toBeInTheDocument());
-    expect(screen.getByText("精确匹配")).toBeInTheDocument();
+    expect(screen.getByText("人工确认")).toBeInTheDocument();
     expect(screen.getByText("已确认")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "撤销匹配" }));
+    expect(await screen.findByText("候选匹配")).toBeVisible();
+    expect(screen.queryByText("人工确认")).not.toBeInTheDocument();
   });
 
   it("restores the previous analysis when a replacement mapping is cancelled", async () => {

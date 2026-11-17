@@ -1,0 +1,14 @@
+{
+  "name": "@partnest/inventory-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --external:@modelcontextprotocol/* --external:zod --outfile=dist/index.mjs",
+    "start": "node dist/index.mjs",
+    "test": "pnpm run build && vitest run"
+  },
+  "dependencies": { "@modelcontextprotocol/server": "^2.4.0", "zod": "^4.0.0" },
+  "devDependencies": { "@modelcontextprotocol/client": "^2.4.0", "@types/node": "^24.0.0", "esbuild": "^0.25.12" }
+}

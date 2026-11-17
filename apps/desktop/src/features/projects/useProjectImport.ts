@@ -15,7 +15,11 @@ export type ProjectImportApi = {
   /** Merge the source an existing project is still missing. */
   supplementProject: (input: { project_id: string; source_path: string; mapping?: FieldMapping }) => Promise<ImportedProject>;
   listParts: () => Promise<Part[]>;
+  getProjectMatches?: (projectId: string) => Promise<import("../../app/contracts").ProjectMatches>;
+  setProjectMatch?: (projectId: string, componentKey: string, partId: string, manual: boolean) => Promise<void>;
+  deleteProjectMatch?: (projectId: string, componentKey: string) => Promise<void>;
   listProjects?: () => Promise<ProjectSummary[]>;
+  getProjectPackage?: (id: string) => Promise<import("../../app/contracts").ProjectPackage | null>;
   analyzeProject?: (id: string) => Promise<ImportPreview>;
   renameProject?: (id: string, name: string) => Promise<ProjectSummary>;
   removeProject?: (id: string) => Promise<void>;
@@ -33,15 +37,20 @@ export type BomAnalysisRow = {
   match: MatchResult;
   status: "exact" | "candidate" | "none";
   confirmed?: boolean;
+  manual?: boolean;
   partId?: string;
   boxSlot?: string;
   candidateIds?: string[];
+  candidates?: { id: string; name: string; mpn: string; package: string; quantity: number; reasons: string[] }[];
 };
 
 const supported = new Set([".html", ".csv", ".xls", ".xlsx"]);
 const fieldNames: FieldName[] = ["quantity", "designators", "name", "value", "package", "manufacturer", "mpn", "lcsc_code", "side"];
 
 const defaultApi: ProjectImportApi = {
+  getProjectMatches: (id) => desktopApi.getProjectMatches(id),
+  setProjectMatch: (id, key, partId, manual) => desktopApi.setProjectMatch(id, key, partId, manual),
+  deleteProjectMatch: (id, key) => desktopApi.deleteProjectMatch(id, key),
   inspectTabularBom: (sourcePath, mapping) => desktopApi.inspectTabularBom(sourcePath, mapping),
   previewInteractiveBom: (sourcePath, companionPath) => desktopApi.previewInteractiveBom(sourcePath, companionPath),
   importProject: (input) => desktopApi.importProject(input),
@@ -74,16 +83,17 @@ function normalizedGroup(group: BomGroupDto): BomGroup {
 }
 
 function partAsInventory(part: Part): InventoryPart {
-  return { id: part.id, name: part.name, package: part.package ?? "", mpn: part.mpn ?? "", lcscCode: part.lcsc_code ?? "", value: part.name };
+  return { id: part.id, name: part.name, package: part.package ?? "", mpn: part.mpn ?? "", lcscCode: part.lcsc_code ?? "", value: part.name, category: part.category };
 }
 
-export function createAnalysisRows(bom: NormalizedBomDto, parts: Part[], confirmed: Record<string, string> = {}): BomAnalysisRow[] {
+export function createAnalysisRows(bom: NormalizedBomDto, parts: Part[], confirmed: Record<string, string | { part_id: string; manual: boolean }> = {}): BomAnalysisRow[] {
   const inventory = parts.map(partAsInventory);
   const byId = new Map(parts.map((part) => [part.id, part]));
   return bom.groups.map((group) => {
     const key = group.component_key;
-    const selected = confirmed[key];
-    const rawMatch = selected ? { kind: "exact-mpn" as const, partId: selected } : matchBomGroup(normalizedGroup(group), inventory);
+    const stored = confirmed[key];
+    const selected = typeof stored === "string" ? stored : stored?.part_id;
+    const rawMatch = selected ? { kind: "exact-mpn" as const, partId: selected } : matchBomGroup(normalizedGroup(group), inventory, { allowSpecificationCandidates: true });
     const match = rawMatch;
     const partId = match.kind === "exact-lcsc" || match.kind === "exact-mpn" ? match.partId : undefined;
     const part = partId ? byId.get(partId) : undefined;
@@ -92,8 +102,9 @@ export function createAnalysisRows(bom: NormalizedBomDto, parts: Part[], confirm
     return {
       componentKey: key, name: group.name, value: group.value, package: group.package,
       required, stock, shortage: Math.max(required - stock, 0), match,
-      status: match.kind === "candidate" ? "candidate" : match.kind === "none" ? "none" : "exact", confirmed: Boolean(selected),
+      status: match.kind === "candidate" ? "candidate" : match.kind === "none" ? "none" : "exact", confirmed: Boolean(selected), manual: typeof stored === "object" && stored.manual,
       partId, boxSlot: part?.slot ?? undefined, candidateIds: match.kind === "candidate" ? match.partIds : undefined,
+      candidates: match.kind === "candidate" ? match.partIds.flatMap((id) => { const item = byId.get(id); return item ? [{ id, name: item.name, mpn: item.mpn, package: item.package, quantity: item.quantity, reasons: match.reasons?.[id] ?? [] }] : []; }) : undefined,
     };
   });
 }
@@ -148,8 +159,8 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
           source_path: sourcePath,
           ...(supplied ? { mapping: supplied } : {}),
         });
-      const listed = await api.listParts();
-      setBom(imported.normalized); setParts(listed); setRows(createAnalysisRows(imported.normalized, listed));
+      const [listed, matches] = await Promise.all([api.listParts(), api.getProjectMatches?.(imported.project_id) ?? Promise.resolve({})]);
+      setBom(imported.normalized); setParts(listed); setRows(createAnalysisRows(imported.normalized, listed, matches));
       setProject({ id: imported.project_id, name: imported.name });
       setStatus("imported");
       targetRef.current = { mode: "import" };
@@ -184,9 +195,9 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
     try {
       const result = await api.analyzeProject(summary.id);
       if (result.kind !== "Ready") { setStatus("error"); setError("该项目的解析结果需要重新映射，请重新导入原始文件"); return; }
-      const listed = await api.listParts();
+      const [listed, matches] = await Promise.all([api.listParts(), api.getProjectMatches?.(summary.id) ?? Promise.resolve({})]);
       setProject({ id: summary.id, name: summary.name });
-      showAnalysis({ bom: result.bom, parts: listed, rows: createAnalysisRows(result.bom, listed) });
+      showAnalysis({ bom: result.bom, parts: listed, rows: createAnalysisRows(result.bom, listed, matches) });
     } catch (cause) { setStatus("error"); setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [api, showAnalysis]);
 
@@ -213,8 +224,13 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
     targetRef.current = { mode: "import" };
     autoImportRef.current = true;
     setCompanionPath(suppliedCompanionPath);
+    if (sourcePath.toLowerCase().endsWith(".zip")) {
+      setPath(sourcePath);
+      await finishImport(sourcePath, undefined, "");
+      return;
+    }
     await inspect(sourcePath, undefined, suppliedCompanionPath, true);
-  }, [bom, companionPath, error, headers, inspect, mapping, parts, path, rows, status]);
+  }, [bom, companionPath, error, finishImport, headers, inspect, mapping, parts, path, rows, status]);
 
   /** Complete an existing project with the source it was imported without. */
   const supplementFrom = useCallback(async (projectId: string, sourcePath: string) => {
@@ -253,13 +269,33 @@ export function useProjectImport({ api = defaultApi }: { api?: ProjectImportApi 
     if (!bom) setPath("");
   }, [bom, project]);
 
-  const confirmMatch = useCallback((componentKey: string, partId: string) => {
-    if (!bom) return;
-    const next = createAnalysisRows(bom, parts, Object.fromEntries(rows.map((row) => [row.componentKey, row.partId ?? ""]).filter(([, id]) => id).concat([[componentKey, partId]])));
-    setRows(next);
-  }, [bom, parts, rows]);
+  const confirmMatch = useCallback(async (componentKey: string, partId: string, manual = false) => {
+    if (!bom) return false;
+    try {
+      if (project && api.setProjectMatch) await api.setProjectMatch(project.id, componentKey, partId, manual);
+      setRows((current) => {
+        const confirmed = Object.fromEntries(current.filter((row) => row.confirmed && row.partId).map((row) => [row.componentKey, { part_id: row.partId!, manual: Boolean(row.manual) }]));
+        confirmed[componentKey] = { part_id: partId, manual };
+        return createAnalysisRows(bom, parts, confirmed);
+      });
+      return true;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
+  }, [api, bom, parts, project, rows]);
 
-  return { status, error, path, headers, mapping, setMapping, bom, rows, project, importFrom, supplementFrom, inspect, loadProject, openWelding, clearLoaded, submitMapping, cancelMapping, confirmMatch, fieldNames };
+  const undoMatch = useCallback(async (componentKey: string) => {
+    if (!bom) return false;
+    setError("");
+    try {
+      if (project && api.deleteProjectMatch) await api.deleteProjectMatch(project.id, componentKey);
+      setRows((current) => {
+        const confirmed = Object.fromEntries(current.filter((row) => row.componentKey !== componentKey && row.confirmed && row.partId).map((row) => [row.componentKey, { part_id: row.partId!, manual: Boolean(row.manual) }]));
+        return createAnalysisRows(bom, parts, confirmed);
+      });
+      return true;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
+  }, [api, bom, parts, project]);
+
+  return { status, error, path, headers, mapping, setMapping, bom, rows, parts, project, importFrom, supplementFrom, inspect, loadProject, openWelding, clearLoaded, submitMapping, cancelMapping, confirmMatch, undoMatch, fieldNames };
 }
 
 export { fieldNames };

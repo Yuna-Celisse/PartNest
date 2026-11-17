@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import type { ProjectMatches, ProjectPackage } from "../../app/contracts";
+const Kicad3DViewer = lazy(() => import("./Kicad3DViewer"));
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { cachedBomUrl, desktopApi, errorMessage, normalizePart, type BomSide, type CachedBomSession, type ConfirmTakeInput, type DesktopApi, type Part, type ProjectSummary, type ResolvedBomSelection, type WeldingProgress } from "../../app/tauri";
 import { matchBomGroup, type InventoryPart } from "@partnest/domain";
@@ -9,9 +11,10 @@ import { TakePanel } from "./TakePanel";
 import { useBomBridge } from "./useBomBridge";
 import { useResizableColumns } from "./useResizableColumns";
 import { StatusBadge } from "../../components/ui/StatusBadge";
+import { summarizeProjectProgress } from "./projectProgress";
 
 export type WeldingApi = Pick<DesktopApi, "restoreActiveWeldingSession" | "resolveBomSelection" | "listParts" | "confirmTake" | "getWeldingProgress">
-  & Partial<Pick<DesktopApi, "listProjects" | "openProjectWelding" | "endWeldingSession">>;
+  & Partial<Pick<DesktopApi, "listProjects" | "openProjectWelding" | "endWeldingSession" | "getProjectPackage" | "getProjectModel" | "getProjectMatches">>;
 
 /** 板面页签的顺序，同时是键盘导航的环形顺序。 */
 const sideOrder: (BomSide | "all")[] = ["top", "bottom", "all"];
@@ -20,10 +23,27 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   const frameRef = useRef<HTMLIFrameElement>(null);
   const sideTabsRef = useRef<HTMLDivElement>(null);
   const [session, setSession] = useState<CachedBomSession | null>(null);
+  const [projectMatches, setProjectMatches] = useState<ProjectMatches>({});
+  const [projectPackage, setProjectPackage] = useState<ProjectPackage | null>(null);
+  const [positionSearch, setPositionSearch] = useState("");
+  const isKicad = session?.original_name.toLowerCase().endsWith(".zip") ?? false;
+  useEffect(() => {
+    let live = true;
+    setProjectPackage(null); setPositionSearch("");
+    if (isKicad && session && api.getProjectPackage) void api.getProjectPackage(session.project_id).then((data) => { if (live) setProjectPackage(data); }).catch((cause) => { if (live) setError(errorMessage(cause)); });
+    return () => { live = false; };
+  }, [api, isKicad, session?.project_id]);
+  useEffect(() => {
+    let live = true;
+    setProjectMatches({});
+    if (session && api.getProjectMatches) void api.getProjectMatches(session.project_id).then((matches) => { if (live) setProjectMatches(matches); }).catch((cause) => { if (live) setError(errorMessage(cause)); });
+    return () => { live = false; };
+  }, [api, session?.project_id]);
   const [parts, setParts] = useState<Part[]>([]);
   const [progress, setProgress] = useState<WeldingProgress[]>([]);
   const [selection, setSelection] = useState<ResolvedBomSelection | null>(null);
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+  const [viewRevision, setViewRevision] = useState(0);
   const [side, setSide] = useState<BomSide | "all">("top");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,7 +55,7 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   const [activating, setActivating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [retryNonce, setRetryNonce] = useState(0);
-  const columns = useResizableColumns({ component: 180, package: 120, quantity: 96, side: 100 });
+  const columns = useResizableColumns({ component: 180, package: 120, quantity: 96, side: 100 }, { maxWidth: 2400 });
 
   useEffect(() => {
     let active = true;
@@ -65,6 +85,8 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
   const selectedGroup = useMemo(() => selection && session?.normalized.groups.find((group) => group.component_key === selection.component_key) || null, [selection, session]);
   const authoritativeMatch = useMemo(() => {
     if (!selectedGroup) return { kind: "none" as const };
+    const stored = projectMatches[selectedGroup.component_key];
+    if (stored && parts.some((part) => part.id === stored.part_id)) return { kind: "exact-mpn" as const, partId: stored.part_id };
     const inventory: InventoryPart[] = parts.map((part) => ({
       id: part.id,
       name: part.name,
@@ -72,6 +94,7 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
       mpn: part.mpn ?? "",
       lcscCode: part.lcsc_code ?? "",
       value: part.name,
+      category: part.category,
     }));
     return matchBomGroup({
       componentKey: selectedGroup.component_key,
@@ -83,8 +106,8 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
       lcscCode: selectedGroup.lcsc_code,
       placements: [],
       extraFields: selectedGroup.extra_fields,
-    }, inventory);
-  }, [parts, selectedGroup]);
+    }, inventory, { allowSpecificationCandidates: true });
+  }, [parts, selectedGroup, projectMatches]);
   const selectedPart = useMemo(() => {
     if (!selectedGroup) return null;
     if (selectedPartId) return parts.find((part) => part.id === selectedPartId) ?? null;
@@ -129,6 +152,7 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
     }, "*");
   }, [session]);
   useEffect(() => { postHighlight(); }, [postHighlight, designatorKey]);
+  const projectProgress = useMemo(() => summarizeProjectProgress(session?.normalized.groups ?? [], progress), [session, progress]);
   const sideTotals = useMemo(() => {
     const totals: Record<BomSide, number> = { top: 0, bottom: 0 };
     for (const group of session?.normalized.groups ?? []) {
@@ -141,6 +165,8 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
 
   const onResolved = useCallback((resolved: ResolvedBomSelection) => {
     setSelection(resolved);
+    setViewRevision((value) => value + 1);
+    setTrayCollapsed(false);
     // A table BOM may not record a board side; the operator's tab decides then.
     if (resolved.side) setSide(resolved.side);
     setSelectedPartId(null);
@@ -279,23 +305,33 @@ export function WeldingPage({ api = desktopApi, navigate }: { api?: WeldingApi; 
         <div className="welding-workspace__meta" aria-label="BOM概览"><span>{session.normalized.groups.length} 个器件组</span><span>{session.normalized.groups.reduce((total, group) => total + group.designators.length, 0)} 个位号</span></div>
         <div className="welding-workspace__actions"><button className="pn-button pn-button--secondary" type="button" onClick={() => void openChooser()}>切换项目</button><button className="pn-button pn-button--secondary" type="button" onClick={() => void exitSession()}>退出当前焊接</button></div>
       </header>
-      <div className="welding-bom bom-canvas-light" data-bom-canvas>{canvasSrc ? <BomFrame src={canvasSrc} frameRef={frameRef} onLoad={postHighlight} /> : <div className="welding-canvas-note" role="status"><strong>表格 BOM 没有交互式画布</strong><span>请在下方「器件列表」点击器件行选择位号，再在右侧确认取用。</span></div>}{canvasSrc ? <div className="welding-canvas-controls"><button className="pn-button pn-button--secondary" type="button" disabled={selectedDesignators.length === 0} onClick={() => postView("fit")}>缩放居中</button><button className="pn-button pn-button--ghost" type="button" onClick={() => postView("reset")}>复位视图</button></div> : null}</div>
+      <div className="welding-bom bom-canvas-light" data-bom-canvas>{isKicad && api.getProjectModel ? <Suspense fallback={<p role="status">正在加载 3D 查看器…</p>}><Kicad3DViewer projectId={session.project_id} load={api.getProjectModel} designators={selectedDesignators} positions={projectPackage?.positions} side={side} viewRevision={viewRevision} onSideChange={chooseSide} references={session.normalized.groups.flatMap((group) => group.designators)} onSelectDesignators={onSelectDesignators} /></Suspense> : canvasSrc ? <BomFrame src={canvasSrc} frameRef={frameRef} onLoad={postHighlight} /> : <div className="welding-canvas-note" role="status"><strong>表格 BOM 没有交互式画布</strong><span>请在下方「器件列表」点击器件行选择位号，再在右侧确认取用。</span></div>}{canvasSrc ? <div className="welding-canvas-controls"><button className="pn-button pn-button--secondary" type="button" disabled={selectedDesignators.length === 0} onClick={() => postView("fit")}>缩放居中</button><button className="pn-button pn-button--ghost" type="button" onClick={() => postView("reset")}>复位视图</button></div> : null}</div>
       <div className="welding-right" id="welding-side-panel" role="tabpanel" aria-labelledby={`welding-side-tab-${side}`} tabIndex={0}>
         <div className="welding-sides" role="tablist" aria-label="板面" aria-orientation="horizontal" ref={sideTabsRef} onKeyDown={onSideTabsKeyDown}>{sideOrder.map((value) => <button key={value} id={`welding-side-tab-${value}`} className={`pn-button ${side === value ? "pn-button--primary" : "pn-button--secondary"}`} type="button" role="tab" aria-controls="welding-side-panel" aria-selected={side === value} tabIndex={side === value ? 0 : -1} onClick={() => chooseSide(value)}>{value === "top" ? "顶层" : value === "bottom" ? "底层" : "全部"}</button>)}</div>
         <div className="welding-progress-summary" aria-label="焊接进度">
           {(["top", "bottom"] as BomSide[]).map((value) => {
-            const item = selectedGroup ? progress.find((entry) => entry.component_key === selectedGroup.component_key && entry.side === value) : undefined;
-            const status = item?.status ?? "pending";
-            const label = status === "taken" ? "已取用" : status === "partial" ? "部分取用" : "待取用";
-            return <span key={value}><span>{value === "top" ? "顶层" : "底层"}</span><strong>{item ? `${item.consumed_quantity}/${item.required_quantity}` : "0/—"}</strong><StatusBadge tone={status === "taken" ? "success" : status === "partial" ? "warning" : "neutral"}>{label}</StatusBadge></span>;
+            const item = projectProgress.sides[value];
+            const complete = item.required > 0 && item.taken === item.required;
+            const label = complete ? "已取用" : item.taken > 0 ? "部分取用" : item.required > 0 ? "待取用" : projectProgress.unknown > 0 ? "待确认板面" : "无器件";
+            return <span key={value}><span>{value === "top" ? "顶层" : "底层"}</span><strong>{item.required > 0 || projectProgress.unknown === 0 ? `${item.taken}/${item.required}` : "板面信息不全"}</strong><StatusBadge tone={complete ? "success" : item.taken > 0 ? "warning" : "neutral"}>{label}</StatusBadge></span>;
           })}
         </div>
+        <p className="welding-project-progress" role="status">项目取用进度：{projectProgress.taken}/{projectProgress.total} 个位号{projectProgress.unknown > 0 && ` · ${projectProgress.unknown} 个未标注板面`}</p>
         {error && (side === "all" || !selection || !selectedGroup) && <p className="welding-feedback welding-feedback--error" role="alert">{error}</p>}
+        {projectPackage && <details className="welding-positions"><summary>器件位置 · {projectPackage.positions.length} 个</summary>
+          <input className="pn-control" aria-label="搜索器件位置" placeholder="位号、值或封装" value={positionSearch} onChange={(event) => setPositionSearch(event.target.value)} />
+          <p>KiCad 坐标（mm）· 点击位号选择器件</p>
+          <div className="pn-table-wrap"><table className="pn-data-table" aria-label="KiCad 器件位置"><thead><tr>{["位号", "X", "Y", "角度", "板面"].map((title) => <th key={title}>{title}</th>)}</tr></thead><tbody>
+            {projectPackage.positions.filter((position) => `${position.reference} ${position.value} ${position.package}`.toLowerCase().includes(positionSearch.toLowerCase())).map((position) => <tr key={position.reference}><td><button className="pn-button pn-button--ghost" onClick={() => onSelectDesignators([position.reference])}>{position.reference}</button></td><td>{position.x_mm}</td><td>{position.y_mm}</td><td>{position.rotation}°</td><td>{["top", "front"].includes(position.side) ? "顶层" : "底层"}</td></tr>)}
+          </tbody></table></div>
+        </details>}
         {selection && selectedGroup ? <>
           <section className="welding-selection-card" aria-label="当前选择">
             <div><span className="welding-selection-card__label">当前器件</span><strong>{selectedGroup.name || selectedGroup.value || selectedGroup.component_key}</strong><span className="welding-selection-card__key">{selectedGroup.component_key}</span></div>
             <p className="welding-selection">当前选择：{selectedDesignators.length ? selectedDesignators.join(", ") : "当前面无器件"}</p>
           </section>
+          {authoritativeMatch.kind === "candidate" && <p className="welding-feedback" role="status">同规格候选需人工核对后选择。{selectedPart && authoritativeMatch.reasons?.[selectedPart.id]?.join("；")}</p>}
+          {projectMatches[selectedGroup.component_key]?.manual && <StatusBadge tone="active">手动匹配</StatusBadge>}
           <TakePanel group={selectedGroup} side={side} designators={selectedDesignators} pendingDesignators={pendingDesignators} part={selectedPart} parts={selectableParts} progress={progress} onPartChange={setSelectedPartId} onConfirm={confirm} error={error} busy={busy} />
           {notice && <p className="welding-feedback welding-feedback--success" role="status">{notice}</p>}
         </> : <><p>请在 BOM 中选择器件</p>{side !== "all" && hasSideInfo && sideTotals[side] === 0 && <p className="welding-empty-side" role="status">当前面无器件</p>}</>}
